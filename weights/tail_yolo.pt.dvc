@@ -1,0 +1,5 @@
+outs:
+- md5: c05b3d43d22f7bd77b3cf09b9a58b6f7
+  size: 40761895
+  hash: md5
+  path: tail_yolo.pt

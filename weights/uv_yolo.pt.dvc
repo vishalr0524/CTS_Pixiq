@@ -1,0 +1,5 @@
+outs:
+- md5: 0848d7888c6b24dfa11b6fae0e3cad98
+  size: 5453075
+  hash: md5
+  path: uv_yolo.pt

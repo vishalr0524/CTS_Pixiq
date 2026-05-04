@@ -1,0 +1,5 @@
+outs:
+- md5: 84e574c4f2cc23c026c4565802ea34b3
+  size: 5460883
+  hash: md5
+  path: visible_yolo.pt

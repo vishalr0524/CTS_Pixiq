@@ -1,0 +1,91 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+/venv
+.venv/
+
+# uv
+.python-version
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+logs/
+
+# Data & weights (large files)
+# Directories not ignored — DVC .gitignore files inside them handle the binaries
+# data/ is still fully ignored (raw images, datasets)
+data/
+
+# Results & output
+results/
+
+# Training artifacts
+training/patchcore/dataset/
+training/patchcore/results/
+training/patchcore_uv/dataset/
+training/patchcore_uv/results/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+
+# HMI — separate repo (sieger-ghcl-hmi)
+hmi/
+
+# Runtime PID files
+.pids/
+
+# Model binaries — tracked via DVC (binaries ignored, .dvc pointers committed)
+*.pt
+*.pth
+*.onnx
+*.pkl
+*.bin
+*.h5
+# Allow DVC pointer files (*.pt.dvc, *.onnx.dvc, etc.)
+!*.dvc
+
+# DVC cache
+.dvc/cache
+.dvc/tmp
+.dvc/config.local
+
+# Debug scripts (dev only)
+debug/
+
+# Loose dev notes
+final.md
+azure_monitoring_guide.md
+review/
+
+# Site config — contains SAS token and site-specific secrets
+src/config.json
+
+# Runtime data (audit images, captures, templates)
+sieger_data/
+
+# validate/dev scripts
+validate_verification.py
+
+# UV analysis dev scripts and outputs (one-off experiments)
+analyse_*.py
+visualise_*.py
+uv_metrics_results.csv
+uv_*.csv
+
+# Training datasets (data is large — DVC tracked or excluded)
+training/dataset/
+site/

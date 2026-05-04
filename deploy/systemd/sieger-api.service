@@ -1,0 +1,29 @@
+[Unit]
+Description=Sieger CV API (FastAPI / uvicorn)
+After=network.target sieger-inspection.service
+Requires=sieger-inspection.service
+
+[Service]
+Type=simple
+User=sieger
+Group=sieger
+WorkingDirectory=/opt/sieger/sieger-ghcl-cv
+Environment=PYTHONPATH=/opt/sieger/sieger-ghcl-cv
+ExecStart=/opt/sieger/venv/bin/uvicorn src.api.main:app \
+    --host 0.0.0.0 \
+    --port 5002 \
+    --workers 1 \
+    --log-level info \
+    --no-access-log
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sieger-api
+
+# Prevent runaway
+MemoryMax=2G
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

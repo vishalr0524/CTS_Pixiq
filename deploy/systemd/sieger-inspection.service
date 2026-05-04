@@ -1,0 +1,26 @@
+[Unit]
+Description=Sieger CV Inspection Service (socket.io)
+After=network.target
+# PLC and cameras must be reachable before starting
+
+[Service]
+Type=simple
+User=sieger
+Group=sieger
+WorkingDirectory=/opt/sieger/sieger-ghcl-cv
+Environment=PYTHONPATH=/opt/sieger/sieger-ghcl-cv
+ExecStart=/opt/sieger/venv/bin/python -m src.services.inspection_service
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sieger-inspection
+
+# GPU access — inspection uses CUDA
+SupplementaryGroups=video render
+
+# Prevent runaway
+MemoryMax=8G
+
+[Install]
+WantedBy=multi-user.target

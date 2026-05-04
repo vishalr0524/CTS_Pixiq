@@ -1,0 +1,5 @@
+outs:
+- md5: 71a5af709ddcbbd90e8d99ef45216a29
+  size: 40756647
+  hash: md5
+  path: yarn_tail_v2.pt

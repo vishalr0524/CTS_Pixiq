@@ -1,0 +1,70 @@
+site_name: Sieger GHCL — Yarn Cone Inspection
+site_description: Developer documentation for the Sieger v3.0.0 inspection system
+site_author: Dhvani AI
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+  icon:
+    repo: fontawesome/brands/github
+
+nav:
+  - Home: index.md
+  - System:
+    - Project Context: project_context.md
+    - Changelog: CHANGELOG.md
+  - Developer:
+    - API Reference: api_reference.md
+    - Frontend Guide: frontend_guide.md
+    - Storage Layout: storage_layout.md
+    - Timing Analysis: timing.md
+  - Hardware & Ops:
+    - Deployment: deployment.md
+    - PLC Handshake: plc_handshake_flow.md
+    - Teaching Guide: teaching_guide.md
+    - Stain Detection: stain_detection.md
+  - Troubleshooting:
+    - Trigger Issues: trigger_issue.md
+    - Trigger Timing: trigger_timing_analysis.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
