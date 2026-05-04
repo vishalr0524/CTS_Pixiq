@@ -81,6 +81,9 @@ Sequential camera fire: VL → Tail → UV
 ## Quick Start
 
 ```bash
+# Create venv with system site packages (for TensorRT access on Jetson)
+uv venv --python 3.10 --system-site-packages
+
 # Install dependencies
 uv sync
 

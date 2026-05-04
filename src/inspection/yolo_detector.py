@@ -89,7 +89,11 @@ class YOLODetector:
                 aliasing and accept all class names as-is.
         """
         resolved_path = self._resolve_model_path(model_path)
-        self.model = YOLO(str(resolved_path))
+        self.model = YOLO(str(resolved_path), task="detect")
+        
+        # JETSON FIX: Disable ONNX simplification to avoid ARM64 C++ core dumps
+        self.model.overrides['simplify'] = False
+        
         self.conf_threshold = conf_threshold
         self.imgsz = imgsz
         self.use_padding = use_padding

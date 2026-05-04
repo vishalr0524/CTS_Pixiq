@@ -10,9 +10,9 @@ import time
 from .inspection_service import InspectionService, InspectionState
 
 # Import mock hardware classes
-from camera.mock_camera import MockCamera
-from camera.mock_capture import MockCaptureSequence
-from plc.mock_plc_client import MockPLCClient
+from ..camera.mock_camera import MockCamera
+from ..camera.mock_capture import MockCaptureSequence
+from ..plc.mock_plc_client import MockPLCClient
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +34,14 @@ class MockInspectionService(InspectionService):
         that read from local folders.
         """
         try:
-            cams_cfg = self.config.get("cameras", [])
+            cams_cfg = self.config.get("cameras", {})
             if not cams_cfg:
                 raise ValueError("Mock camera configuration is missing in 'cameras' section.")
 
-            for cam_cfg in cams_cfg:
-                cam_name = cam_cfg["name"]
-                folder_path = cam_cfg["folder_path"]
+            for cam_name, cam_cfg in cams_cfg.items():
+                folder_path = cam_cfg.get("folder_path")
+                if not folder_path:
+                    raise ValueError(f"Camera '{cam_name}' missing 'folder_path' in config")
                 
                 cam = MockCamera(
                     name=cam_name.upper(),
@@ -126,4 +127,37 @@ class MockInspectionService(InspectionService):
             time.sleep(2)
 
         super()._run_capture_cycle()
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+    from pathlib import Path
+    
+    parser = argparse.ArgumentParser(description="Mock Inspection Service")
+    parser.add_argument("--config", type=str, default="src/config.json", help="Config file path")
+    parser.add_argument("--host", type=str, help="Host to bind to")
+    parser.add_argument("--port", type=int, help="Port to bind to")
+    args = parser.parse_args()
+    
+    config_path = Path(args.config)
+    config = {}
+    if config_path.exists():
+        with open(config_path) as f:
+            config = json.load(f)
+    else:
+        logger.warning("Config not found: %s", config_path)
+    
+    if "service" not in config:
+        config["service"] = {}
+    if args.host:
+        config["service"]["host"] = args.host
+    if args.port:
+        config["service"]["port"] = args.port
+    
+    service = MockInspectionService(config)
+    try:
+        service.run()
+    except KeyboardInterrupt:
+        service.stop()
 

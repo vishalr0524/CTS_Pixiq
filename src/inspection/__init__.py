@@ -47,3 +47,7 @@ __all__ = [
     "TailResult",
     "InspectionResult",
 ]
+
+# Suppress harmless matplotlib warnings caused by system/venv duplication on Jetson
+import warnings
+warnings.filterwarnings("ignore", message="Unable to import Axes3D")

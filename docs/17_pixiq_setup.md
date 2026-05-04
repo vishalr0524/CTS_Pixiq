@@ -13,9 +13,9 @@ graph TB
         SW[Industrial Switch<br/>Managed, Jumbo MTU 9000<br/>192.168.1.x]
 
         subgraph Cameras
-            VL[VL Camera<br/>a2A2600-20gcPRO<br/>192.168.1.160]
-            UV[UV Camera<br/>acA1920-40gc<br/>192.168.1.161]
-            TAIL[Tail Camera<br/>a2A1920-40gc<br/>192.168.1.162]
+            VL[VL Camera<br/>a2A2600-20gcPRO 25mm, 6mp <br/>192.168.1.160]
+            UV[UV Camera<br/>acA1920-40gc 16mm, 5mp<br/>192.168.1.161]
+            TAIL[Tail Camera<br/>a2A1920-40gc 25mm, 5mp<br/>192.168.1.162]
         end
 
         PLC[Siemens S7 PLC<br/>Modbus TCP<br/>192.168.1.110:502]
@@ -61,9 +61,9 @@ graph TB
 | Component | Model | Connection | IP | Role |
 |-----------|-------|------------|-----|------|
 | pixIQ | Jetson Orin NX 16GB | — | 192.168.1.x (factory), DHCP (internet) | Compute + inference |
-| VL Camera | a2A2600-20gcPRO | GigE → switch | 192.168.1.160 | Visible light, side view (2600x2048) |
-| UV Camera | acA1920-40gc | GigE → switch | 192.168.1.161 | UV light, side view (1920x1200) |
-| Tail Camera | a2A1920-40gc | GigE → switch | 192.168.1.162 | Yarn tail, top-down (1920x1200) |
+| VL Camera | a2A2600-20gcPRO | GigE → switch | 192.168.1.160 | Visible light, side view (2600x2048, 25mm, 6mp) |
+| UV Camera | acA1920-40gc | GigE → switch | 192.168.1.161 | UV light, side view (1920x1200, 16mm, 5mp) |
+| Tail Camera | a2A1920-40gc | GigE → switch | 192.168.1.162 | Yarn tail, top-down (1920x1200, 25mm, 5mp) |
 | PLC | Siemens S7 | Ethernet → switch | 192.168.1.110 | Conveyor control, Modbus TCP :502 |
 | HMI | All-in-one touchscreen | Ethernet → switch | 192.168.1.x | Operator interface, Chromium browser |
 | Switch | Industrial managed | — | — | Jumbo frame support required (MTU 9000) |
@@ -218,9 +218,9 @@ Assign IPs matching `config.json`:
 
 | Camera | Model | IP |
 |--------|-------|----|
-| VL | a2A2600-20gcPRO | 192.168.1.160 |
-| UV | acA1920-40gc | 192.168.1.161 |
-| Tail | a2A1920-40gc | 192.168.1.162 |
+| VL | a2A2600-20gcPRO (25mm, 6mp) | 192.168.1.160 |
+| UV | acA1920-40gc (16mm, 5mp) | 192.168.1.161 |
+| Tail | a2A1920-40gc (25mm, 5mp) | 192.168.1.162 |
 
 **Important:** Use the Pylon IP Configurator to set **persistent** static IPs (stored in camera flash). Temporary IPs (ForceIP) reset on power cycle.
 
@@ -230,6 +230,8 @@ After cameras and network are configured, export YOLO models to TensorRT:
 
 ```bash
 cd /opt/sieger
+uv venv --python 3.10 --system-site-packages
+uv sync
 uv run python scripts/export_tensorrt.py
 ```
 

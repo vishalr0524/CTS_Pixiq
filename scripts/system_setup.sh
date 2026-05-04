@@ -32,6 +32,12 @@
 
 set -euo pipefail
 
+# Ensure CUDA tools are in PATH (nvcc may not be in root's PATH by default)
+# /usr/local/cuda is the standard CUDA installation path on Linux/Jetson
+if [ -d /usr/local/cuda/bin ]; then
+    export PATH=/usr/local/cuda/bin:$PATH
+fi
+
 # ── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -96,7 +102,6 @@ apt-get install -y \
     wget \
     unzip \
     htop \
-    jtop \
     nginx \
     sqlite3 \
     libsqlite3-dev \
@@ -113,7 +118,13 @@ apt-get install -y \
     net-tools \
     ethtool \
     iputils-ping \
-    network-manager
+    network-manager \
+    python3-pip \
+    python3-libnvinfer \
+    python3-libnvinfer-dev
+
+log "Installing jetson-stats (jtop)..."
+pip3 install -U jetson-stats
 
 log "System packages installed"
 
@@ -153,7 +164,7 @@ log "GigE receive buffer set to 16MB (net.core.rmem_max)"
 # Override with FACTORY_NIC env var if auto-detection is wrong.
 if [ -z "$FACTORY_NIC" ]; then
     SUBNET_PREFIX=$(echo "$FACTORY_SUBNET" | cut -d'/' -f1 | sed 's/\.[0-9]*$//')
-    FACTORY_NIC=$(ip -o -4 addr show | grep "${SUBNET_PREFIX}\." | awk '{print $2}' | head -1)
+    FACTORY_NIC=$(ip -o -4 addr show | grep "${SUBNET_PREFIX}\." | awk '{print $2}' | head -1 || true)
 fi
 
 if [ -n "$FACTORY_NIC" ]; then
@@ -333,28 +344,7 @@ usermod -aG video,render "$SIEGER_USER" 2>/dev/null || true
 mkdir -p "$INSTALL_DIR"
 chown "$SIEGER_USER:$SIEGER_USER" "$INSTALL_DIR"
 
-# Install pypylon from source (ARM64 has no prebuilt wheels)
-if python3 -c "from pypylon import pylon" 2>/dev/null; then
-    log "pypylon already installed"
-else
-    if [ -d /opt/pylon ]; then
-        log "Building pypylon from source against pylon SDK..."
-        # Install as the sieger user's pip
-        sudo -u "$SIEGER_USER" pip install pypylon --no-binary pypylon \
-            2>/dev/null || {
-            warn "pip install failed — trying build from source"
-            TMPDIR=$(mktemp -d)
-            git clone https://github.com/basler/pypylon.git "$TMPDIR/pypylon"
-            cd "$TMPDIR/pypylon"
-            pip install .
-            cd -
-            rm -rf "$TMPDIR"
-        }
-        log "pypylon installed"
-    else
-        warn "Skipping pypylon — pylon SDK not installed yet"
-    fi
-fi
+log "Skipping global pypylon setup — uv sync handles pypylon natively inside the Python 3.12 sandbox."
 
 # ============================================================================
 # 6. Jetson power & performance
@@ -363,7 +353,7 @@ step "6/7  Jetson power & performance"
 
 # Set to maximum performance mode (MAXN)
 if command -v nvpmodel &> /dev/null; then
-    nvpmodel -m 0 2>/dev/null || true
+    nvpmodel -m 2 2>/dev/null || true
     log "Power mode set to MAXN (maximum performance)"
 else
     warn "nvpmodel not found — cannot set power mode"
@@ -443,14 +433,6 @@ printf "│  %-20s " "Pylon SDK:"
 if [ -d /opt/pylon ]; then
     PYLON_VER=$(/opt/pylon/bin/pylon-config --version 2>/dev/null || echo "installed")
     echo -e "${GREEN}$PYLON_VER${NC}                                     │"
-else
-    echo -e "${RED}NOT INSTALLED${NC}                                  │"
-fi
-
-# pypylon
-printf "│  %-20s " "pypylon:"
-if python3 -c "from pypylon import pylon; print('OK')" 2>/dev/null; then
-    echo -e "${GREEN}OK${NC}                                            │"
 else
     echo -e "${RED}NOT INSTALLED${NC}                                  │"
 fi

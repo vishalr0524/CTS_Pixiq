@@ -4,11 +4,19 @@
 
 Three Basler GigE cameras capture images sequentially — VL, Tail, UV — with light switching between each. All cameras use the Basler pypylon SDK. Cameras are hardware-triggered by proximity sensors on the conveyor (Line1 rising edge).
 
+<<<<<<< HEAD
+| Camera | Model | IP | Resolution | Exposure | Light Relay | View |
+|--------|-------|----|------------|----------|-------------|------|
+| VL | a2A2600-20gcPRO | 192.168.2.10 | 2600×2048 (25mm, 6mp) | 11 ms | 40006 | Side view of cone |
+| UV | acA1920-40gc | 192.168.2.11 | 1920×1200 (16mm, 5mp) | 70 ms | 40005 | Side view under UV |
+| Tail | a2A1920-40gc | 192.168.2.12 | 1920×1200 (25mm, 5mp) | 8 ms | 40007 | Top-down, yarn tail |
+=======
 | Camera | Model | Lens | IP | Resolution | Exposure | Light Relay | View |
 |--------|-------|------|----|------------|----------|-------------|------|
 | VL | a2A2600-20gcPRO | 25 mm | 192.168.1.160 | 2600×2048 | 11 ms | 40006 | Side view of cone |
 | UV | acA1920-40gc | 16 mm | 192.168.1.161 | 1920×1200 | 70 ms | 40005 | Side view under UV |
 | Tail | a2A1920-40gc | 25 mm | 192.168.1.162 | 1920×1200 | 8 ms | 40007 | Top-down, yarn tail |
+>>>>>>> origin/main
 
 ## 4.2 Camera Class
 

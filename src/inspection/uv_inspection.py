@@ -254,7 +254,6 @@ class UVInspection:
                 return self._detection_failed("no tube detected")
 
             result = self._compute_radial_dip(frame, cone_det.bbox, tube_det.bbox)
-            result.cone_bbox = cone_det.bbox
 
             if result is None:
                 return self._detection_failed("radial dip compute failed")
@@ -273,7 +272,7 @@ class UVInspection:
                 "MIXUP" if has_mixup else "OK",
             )
 
-            return UVResult(has_mixup=has_mixup, radial_dip=max_dip, gb_ratio=gb_mean)
+            return UVResult(has_mixup=has_mixup, radial_dip=max_dip, gb_ratio=gb_mean, cone_bbox = cone_det.bbox)
 
         except Exception:
             logger.exception("Unexpected error in UV process_frame")

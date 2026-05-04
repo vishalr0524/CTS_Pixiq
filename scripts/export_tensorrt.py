@@ -105,7 +105,7 @@ def export_model(model_path: Path, imgsz: int, half: bool) -> Path:
 
     t_start = time.perf_counter()
     model = YOLO(str(model_path))
-    model.export(format="engine", imgsz=imgsz, half=half)
+    model.export(format="engine", imgsz=imgsz, half=half, simplify=False)
     t_elapsed = time.perf_counter() - t_start
 
     if not engine_path.exists():

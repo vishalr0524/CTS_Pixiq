@@ -158,8 +158,11 @@ rsync -av --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' \
 # SSH into pixIQ device
 ssh sieger@<pixiq-ip>
 
-# Install Python dependencies (pypylon must be installed separately, see 14.7)
+# Create venv with system site packages (required for TensorRT on Jetson)
 cd ~/sieger
+~/.local/bin/uv venv --python 3.10 --system-site-packages
+
+# Install Python dependencies (pypylon must be installed separately, see 14.7)
 ~/.local/bin/uv sync
 
 # Edit config.json with site-specific values (camera IPs, PLC IP)

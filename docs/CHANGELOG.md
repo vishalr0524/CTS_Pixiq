@@ -1,6 +1,23 @@
 # Change Log — pixIQ Yarn Cone Inspection
 
+## Unreleased — 2026-04-29
+
+### Environment & Stability
+- **Dependency Management**: Transitioned to `uv` for python dependencies.
+- **Core Dump Fix**: Permanently removed `onnxruntime` from `pyproject.toml`. The system now runs exclusively on native TensorRT engines to avoid ARM64 memory architecture conflicts.
+- **Warning Suppression**: Suppressed `matplotlib` 3D warnings in `src/inspection/__init__.py` and Ultralytics "task guessing" warnings in `src/inspection/yolo_detector.py`.
+
+### Inference Optimization
+- **TensorRT Pipeline**: All models exported to FP16 engines via `scripts/export_tensorrt.py`.
+- **ARM64 Compatibility**: Globally disabled ONNX simplification (`simplify=False`) in `YOLODetector` to prevent C++ assertion failures during runtime.
+- **Task Definition**: Explicitly set `task="detect"` for all YOLO instances.
+
+### Critical Bug Fixes
+- **UV Inspection**: Resolved a fatal `AttributeError` crash by correctly passing `cone_bbox` to the `UVResult` constructor instead of attempting an illegal assignment on a tuple. This enables proper stream cropping in the Web UI.
+- **Camera Trigger Debounce**: Fixed SFNC portability issue where `LineDebouncerTime` write silently failed on ace classic cameras (UV/Tail). Implemented model-aware node selection (`LineDebouncerTimeAbs` vs `LineDebouncerTime`) to ensure proximity-sensor bounce filtering is active across all three stations.
+
 ## Unreleased — 2026-04-14
+
 - **Cameras**: Updated Tail camera model from acA1920-40gc (ace classic) to a2A1920-40gc (ace 2). Added lens specs: VL 25mm, UV 16mm, Tail 25mm. Updated all docs, diagrams, README, CLAUDE.md, and source docstrings.
 - **Diagrams**: Added `inspection_sequence.mmd` (capture sequence diagram) and `system_block_diagram.mmd` (full system block diagram) to `docs/diagrams/`. Corrected camera models and added lens specs in all `.mmd` files.
 - **Docs overhaul**: Purged all stale x86/IDS references from documentation. Updated `project_context.md`, `01_system_overview.md`, `02_architecture.md`, `04_camera_capture.md`, `05_inspection_pipeline.md`, `10_rest_api.md`, `13_configuration.md`, `14_deployment.md`, `17_pixiq_setup.md`, `index.md`, `api_reference.md`, `frontend_v3_guide.md`. All docs now reflect pixIQ as primary platform: Jetson Orin NX 16GB, Basler GigE cameras (pypylon), TensorRT FP16, 192.168.1.0/24 subnet, Line1 hardware trigger. Removed all IDS Peak, RTX 3050, 192.168.2.x, and "x86 as primary" references.

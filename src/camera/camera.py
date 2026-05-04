@@ -5,8 +5,7 @@ One Camera instance per physical camera. Instances are created once at app
 startup and reused across start/stop cycles.
 
 Supported cameras:
-    - acA1920-40gc    (ace classic, UV station)
-    - a2A1920-40gc    (ace 2, Tail station)
+    - acA1920-40gc   (ace classic, UV + Tail stations)
     - a2A2600-20gcPRO (ace 2 PRO, VL station)
 
 Both are GigE Vision cameras identified by static IP address on the
@@ -139,29 +138,53 @@ class Camera:
             self._camera.TriggerActivation.Value = "RisingEdge"
             logger.info(f"Camera '{self.name}': TriggerActivation {current} → RisingEdge")
 
-        # Trigger debounce — filter sensor bounce/vibration
+        # Detect ace 2 vs ace classic — ace 2 model names start with "a2A".
+        # Must be set BEFORE configuring debounce / counters / exposure because
+        # the SFNC node names differ between generations.
+        self._is_ace2 = model.startswith("a2A")
+        if not self._is_ace2 and hasattr(self._camera, "CounterTriggerSource"):
+            # Fallback: probe CounterTriggerSource (only present on SFNC 2.x)
+            try:
+                self._is_ace2 = genicam.IsAvailable(self._camera.CounterTriggerSource)
+            except genicam.GenericException:
+                self._is_ace2 = False
+
+        # Trigger debounce — filter sensor bounce/vibration.
+        # SFNC node name is generation-dependent:
+        #   ace 2 (a2A, SFNC 2.x) → LineDebouncerTime
+        #   ace classic (acA, SFNC 1.x) → LineDebouncerTimeAbs
+        # Both take the value in microseconds.
         if self.trigger_debounce_us > 0:
+            debounce_node_name = "LineDebouncerTime" if self._is_ace2 else "LineDebouncerTimeAbs"
             try:
                 # Select the trigger input line before setting debounce
                 if genicam.IsAvailable(self._camera.LineSelector):
                     self._camera.LineSelector.Value = "Line1"
-                self._camera.LineDebouncerTime.Value = float(self.trigger_debounce_us)
+
+                node_map = self._camera.GetNodeMap()
+                debounce_node = node_map.GetNode(debounce_node_name)
+                if debounce_node is None or not genicam.IsAvailable(debounce_node):
+                    # Fall back to the other name (defensive — covers firmware
+                    # variants that don't follow the model-prefix rule).
+                    alt_name = "LineDebouncerTimeAbs" if self._is_ace2 else "LineDebouncerTime"
+                    debounce_node = node_map.GetNode(alt_name)
+                    if debounce_node is not None and genicam.IsAvailable(debounce_node):
+                        debounce_node_name = alt_name
+                    else:
+                        raise genicam.LogicalErrorException(
+                            f"neither LineDebouncerTime nor LineDebouncerTimeAbs available"
+                        )
+
+                debounce_node.SetValue(float(self.trigger_debounce_us))
                 logger.info(
-                    f"Camera '{self.name}': line debounce set to {self.trigger_debounce_us}us "
+                    f"Camera '{self.name}': line debounce set via {debounce_node_name} "
+                    f"to {self.trigger_debounce_us}us "
                     f"({self.trigger_debounce_us / 1000:.0f}ms)"
                 )
             except genicam.GenericException as e:
                 logger.warning(
                     f"Camera '{self.name}': trigger debounce not supported ({e})"
                 )
-
-        # Detect ace 2 vs ace classic — ace 2 has CounterTriggerSource
-        self._is_ace2 = genicam.IsAvailable(
-            getattr(self._camera, 'CounterTriggerSource', None)
-        ) if hasattr(self._camera, 'CounterTriggerSource') else False
-        # Safer detection: ace 2 models start with "a2A"
-        if model.startswith("a2A"):
-            self._is_ace2 = True
 
         # Hardware trigger counter — count Line1 rising edges via Counter1.
         # Comparing this against delivered frames reveals missed triggers.
