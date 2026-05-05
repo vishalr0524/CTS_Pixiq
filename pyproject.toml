@@ -3,7 +3,7 @@ name = "sieger-pixiq-cv"
 version = "1.0.0"
 description = "pixIQ yarn cone inspection system — Jetson Orin NX + Basler GigE cameras"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10, <3.11"
 dependencies = [
     "anomalib>=2.2.0",
     "azure-storage-blob>=12.28.0",
@@ -11,8 +11,12 @@ dependencies = [
     "eventlet>=0.40.4",
     "fastapi>=0.115.0",
     "ifcfg>=0.24",
-    "numpy>=2.4.2",
-    "opencv-python>=4.13.0.92",
+    "numpy<2.0.0",
+    "opencv-python<4.11.0",
+    "onnx>=1.16.0",
+    "onnxslim>=0.1.31",
+    "torch==2.8.0",
+    "torchvision==0.23.0",
     "pymodbustcp>=0.3.0",
     # pypylon: ARM64 has no prebuilt wheel — install pylon SDK first,
     # then: pip install pypylon --no-binary pypylon (see docs/14_deployment.md)
@@ -21,8 +25,6 @@ dependencies = [
     "python-socketio>=5.16.0",
     "pytz>=2025.2",
     "scikit-image>=0.24.0",
-    "torch>=2.10.0",
-    "torchvision>=0.25.0",
     "ultralytics>=8.4.11",
     "uvicorn>=0.34.0",
     "bcrypt>=4.2.0",
@@ -34,3 +36,13 @@ dev = [
     "pytest-cov>=6.0",
     "ruff>=0.11",
 ]
+
+[[tool.uv.index]]
+name = "jetson-ai"
+url = "https://pypi.jetson-ai-lab.io/jp6/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "jetson-ai" }
+torchvision = { index = "jetson-ai" }
+
