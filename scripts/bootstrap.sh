@@ -86,7 +86,6 @@ EOF
     done
     
     cat >> "$REPORT_FILE" <<EOF
-
   ]
 }
 EOF
@@ -169,6 +168,7 @@ SSH_KEY_PATH="$HOME/.ssh/id_ed25519"
 
 if [ -f "$SSH_KEY_PATH" ]; then
     log "SSH key already exists: $SSH_KEY_PATH"
+    cat "$SSH_KEY_PATH"
     add_check "ssh_key_exists" "success" "$SSH_KEY_PATH"
 else
     warn "No SSH key found. Generating new SSH key..."
@@ -179,24 +179,32 @@ else
     
     log "SSH key generated: $SSH_KEY_PATH"
     add_check "ssh_key_generated" "success" "$SSH_KEY_PATH"
-    
-    echo ""
-    warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    warn "ACTION REQUIRED: Add this SSH key to GitHub"
-    warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo ""
-    cat "$SSH_KEY_PATH.pub"
-    echo ""
-    warn "1. Copy the key above"
-    warn "2. Go to: https://github.com/settings/ssh/new"
-    warn "3. Paste the key and save"
-    echo ""
-    read -p "Press ENTER after adding the key to GitHub..." </dev/tty
 fi
+
+# Start ssh-agent and add key to agent
+log "Starting ssh-agent and adding key..."
+eval "$(ssh-agent -s)" > /dev/null
+ssh-add "$SSH_KEY_PATH" 2>&1 > /dev/null
+log "Key added to ssh-agent"
+add_check "ssh_agent_setup" "success" "key added to agent"
+
+# Display public key for GitHub
+echo ""
+warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+warn "ACTION REQUIRED: Add this SSH key to GitHub"
+warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+cat "$SSH_KEY_PATH.pub"
+echo ""
+warn "1. Copy the key above"
+warn "2. Go to: https://github.com/settings/ssh/new"
+warn "3. Paste the key and save"
+echo ""
+read -p "Press ENTER after adding the key to GitHub..." </dev/tty
 
 # Validate SSH access to GitHub
 log "Validating GitHub SSH access..."
-if ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
+if git ls-remote "$REPO_URL" HEAD &>/dev/null; then
     log "GitHub SSH authentication successful"
     add_check "github_ssh_auth" "success" "authenticated"
 else

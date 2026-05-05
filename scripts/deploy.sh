@@ -403,13 +403,22 @@ if [ "$VALIDATE_ONLY" == false ]; then
     
     if [ -f "$SETUP_SCRIPT" ]; then
         log "Running system setup script..."
-        if sudo "$SETUP_SCRIPT"; then
+        
+        # Capture console output
+        SETUP_LOG=$(mktemp)
+        if sudo "$SETUP_SCRIPT" 2>&1 | tee "$SETUP_LOG"; then
             log "System setup completed ✓"
-            add_check "tools_installation" "system_setup" "success" "completed"
+            
+            # Add console output to report (limit to first 100 lines)
+            SETUP_OUTPUT=$(cat "$SETUP_LOG" | head -n 100 | tr '\n' ' ' | tr '"' "'" )
+            add_check "tools_installation" "system_setup" "success" "output: ${SETUP_OUTPUT}"
+            rm -f "$SETUP_LOG"
         else
             err "System setup script failed"
-            add_check "tools_installation" "system_setup" "failed" "script error"
+            SETUP_OUTPUT=$(cat "$SETUP_LOG" | tr '\n' ' ' | tr '"' "'")
+            add_check "tools_installation" "system_setup" "failed" "error: ${SETUP_OUTPUT}"
             add_error "tools_installation" "System setup script failed"
+            rm -f "$SETUP_LOG"
             end_phase "tools_installation" "failed"
         fi
     else
@@ -435,67 +444,68 @@ if [ "$VALIDATE_ONLY" == false ]; then
 fi
 
 # ============================================================================
-# PHASE 3: AUTHENTICATION
+# PHASE 3: DVC SETUP WITH CONNECTION STRING
 # ============================================================================
 
 if [ "$VALIDATE_ONLY" == false ]; then
-    step "Phase 3: Authentication Setup"
-    start_phase "authentication"
+    step "Phase 3: DVC Setup"
+    start_phase "dvc_setup"
     
-    # Check GitHub SSH (already validated by bootstrap)
-    if ssh -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
-        log "GitHub SSH: OK ✓"
-        add_check "authentication" "github_ssh" "success" "authenticated"
+    # Install DVC with Azure support
+    if check_command "pip3"; then
+        log "Installing DVC with Azure support..."
+        if pip3 install "dvc[azure]" &> /dev/null; then
+            DVC_VERSION=$(dvc --version 2>/dev/null || echo "unknown")
+            log "DVC installed: $DVC_VERSION ✓"
+            add_check "dvc_setup" "dvc_install" "success" "$DVC_VERSION"
+        else
+            err "Failed to install DVC"
+            add_check "dvc_setup" "dvc_install" "failed" "pip install failed"
+            add_error "dvc_setup" "DVC installation failed"
+        fi
+    fi
+    
+    # Verify DVC remote is configured from repo
+    log "Verifying DVC remote configuration..."
+    if dvc remote list | grep -q "azure"; then
+        REMOTE_URL=$(dvc remote list | grep azure | awk '{print $2}')
+        log "DVC remote found: $REMOTE_URL ✓"
+        add_check "dvc_setup" "dvc_remote_list" "success" "$REMOTE_URL"
     else
-        err "GitHub SSH authentication failed"
-        add_check "authentication" "github_ssh" "failed" "not authenticated"
-        add_error "authentication" "GitHub SSH access required"
+        warn "DVC remote 'azure' not found"
+        log "Adding DVC remote manually..."
+        dvc remote add -d azure azure://dvc-store/sieger-ghcl-cv
+        dvc remote modify azure account_name dhvanicvdvc
+        add_check "dvc_setup" "dvc_remote_list" "warning" "added manually"
+        add_warning "dvc_setup" "DVC remote was not pre-configured in repository"
     fi
     
-    # Check Azure CLI authentication
-    if check_command "az"; then
-        if az account show &> /dev/null; then
-            AZURE_ACCOUNT=$(az account show --query user.name -o tsv 2>/dev/null || echo "unknown")
-            log "Azure CLI: Authenticated as $AZURE_ACCOUNT ✓"
-            add_check "authentication" "azure_cli" "success" "$AZURE_ACCOUNT"
+    # Set Azure Storage connection string
+    log "Configuring Azure Storage connection string..."
+    if [ -n "${AZURE_STORAGE_CONNECTION_STRING:-}" ]; then
+        log "Using AZURE_STORAGE_CONNECTION_STRING from environment ✓"
+        add_check "dvc_setup" "connection_string" "success" "from environment"
+    else
+        warn "AZURE_STORAGE_CONNECTION_STRING not set in environment"
+        read -p "Enter Azure Storage connection string (or press Enter to skip): " CONN_STRING
+        if [ -n "$CONN_STRING" ]; then
+            export AZURE_STORAGE_CONNECTION_STRING="$CONN_STRING"
+            add_check "dvc_setup" "connection_string" "success" "manually entered"
         else
-            warn "Azure CLI not authenticated"
-            warn "Run 'az login' to authenticate"
-            add_check "authentication" "azure_cli" "warning" "not authenticated"
-            add_warning "authentication" "Azure CLI not authenticated — DVC pull may fail"
+            add_check "dvc_setup" "connection_string" "warning" "not provided"
+            add_warning "dvc_setup" "Connection string not configured — DVC pull will fail"
         fi
     fi
     
-    # Configure DVC remote
-    if check_command "dvc"; then
-        log "Configuring DVC remote..."
-        
-        # Check if DVC remote already configured
-        if dvc remote list | grep -q "azure"; then
-            log "DVC remote already configured ✓"
-            add_check "authentication" "dvc_remote" "success" "already configured"
-        else
-            log "DVC remote 'azure' not found in dvc remote list"
-            add_check "authentication" "dvc_remote" "warning" "not configured"
-            add_warning "authentication" "DVC remote not configured"
-        fi
-        
-        # Try to get Azure storage key if authenticated
-        if az account show &> /dev/null; then
-            log "Retrieving Azure storage account key..."
-            if STORAGE_KEY=$(az storage account keys list --account-name dhvanicvdvc --query "[0].value" -o tsv 2>/dev/null); then
-                dvc remote modify --local azure account_key "$STORAGE_KEY"
-                log "DVC remote key configured ✓"
-                add_check "authentication" "dvc_key" "success" "configured"
-            else
-                warn "Failed to retrieve Azure storage key"
-                add_check "authentication" "dvc_key" "warning" "retrieval failed"
-                add_warning "authentication" "Could not retrieve Azure storage key automatically"
-            fi
-        fi
+    # Configure DVC local config with connection string
+    if [ -n "${AZURE_STORAGE_CONNECTION_STRING:-}" ]; then
+        log "Setting DVC remote connection string..."
+        dvc remote modify --local azure connection_string "$AZURE_STORAGE_CONNECTION_STRING"
+        log "DVC remote configured ✓"
+        add_check "dvc_setup" "dvc_remote_config" "success" "connection string set"
     fi
     
-    end_phase "authentication" "success"
+    end_phase "dvc_setup" "success"
 fi
 
 # ============================================================================
@@ -553,22 +563,29 @@ if [ "$VALIDATE_ONLY" == false ]; then
     if check_command "uv"; then
         # Create or update virtual environment
         if [ -d ".venv" ]; then
-            log "Virtual environment exists, syncing dependencies..."
+            log "Virtual environment exists ✓"
             add_check "python_environment" "venv_exists" "success" "found"
         else
-            log "Creating virtual environment..."
-            uv venv --python 3.10 --system-site-packages
-            add_check "python_environment" "venv_created" "success" "python 3.10"
+            log "Creating virtual environment with Python 3.10 and system-site-packages..."
+            if uv venv --python 3.10 --system-site-packages; then
+                log "Virtual environment created ✓"
+                add_check "python_environment" "venv_created" "success" "python 3.10 with system-site-packages"
+            else
+                err "Failed to create virtual environment"
+                add_check "python_environment" "venv_created" "failed" "uv venv failed"
+                add_error "python_environment" "Virtual environment creation failed"
+                end_phase "python_environment" "failed"
+            fi
         fi
         
-        log "Installing dependencies..."
+        log "Syncing dependencies with uv..."
         if uv sync; then
-            log "Dependencies installed ✓"
+            log "Dependencies synced ✓"
             add_check "python_environment" "dependencies" "success" "uv sync completed"
         else
-            err "Dependency installation failed"
+            err "Dependency sync failed"
             add_check "python_environment" "dependencies" "failed" "uv sync failed"
-            add_error "python_environment" "Failed to install Python dependencies"
+            add_error "python_environment" "Failed to sync Python dependencies"
             end_phase "python_environment" "failed"
         fi
         
@@ -646,10 +663,10 @@ if [ "$VALIDATE_ONLY" == false ]; then
     
     EXPORT_SCRIPT="$PROJECT_ROOT/scripts/export_tensorrt.py"
     
-    if [ -f "$EXPORT_SCRIPT" ] && [ -d ".venv" ]; then
+    if [ -f "$EXPORT_SCRIPT" ] && check_command "uv"; then
         log "Exporting TensorRT engines (this may take several minutes)..."
         
-        if .venv/bin/python "$EXPORT_SCRIPT"; then
+        if uv run python "$EXPORT_SCRIPT"; then
             log "TensorRT export completed ✓"
             add_check "tensorrt_export" "export" "success" "completed"
             
@@ -689,14 +706,77 @@ if [ "$VALIDATE_ONLY" == false ]; then
     start_phase "service_installation"
     
     SERVICE_DIR="$PROJECT_ROOT/deploy/systemd"
+    NGINX_DIR="$PROJECT_ROOT/deploy/nginx"
+    
+    # Detect deployment environment
+    DEPLOY_USER=$(whoami)
+    DEPLOY_GROUP=$(id -gn)
+    WORKDIR="$PROJECT_ROOT"
+    VENV_PYTHON="$WORKDIR/.venv/bin/python"
+    
+    log "Deployment environment detected:"
+    log "  User: $DEPLOY_USER"
+    log "  Group: $DEPLOY_GROUP"
+    log "  WorkDir: $WORKDIR"
+    log "  Python: $VENV_PYTHON"
+    
+    # Validate environment
+    if ! id "$DEPLOY_USER" &>/dev/null; then
+        err "User $DEPLOY_USER does not exist"
+        add_check "service_installation" "user_validation" "failed" "user not found"
+        add_error "service_installation" "Deployment user does not exist"
+        end_phase "service_installation" "failed"
+    else
+        add_check "service_installation" "user_validation" "success" "$DEPLOY_USER exists"
+    fi
+    
+    if [ ! -x "$VENV_PYTHON" ]; then
+        err "Python venv not found at $VENV_PYTHON"
+        add_check "service_installation" "venv_validation" "failed" "venv python missing"
+        add_error "service_installation" "Virtual environment Python not found"
+        end_phase "service_installation" "failed"
+    else
+        add_check "service_installation" "venv_validation" "success" "$VENV_PYTHON exists"
+    fi
+    
+    if [ ! -d "$WORKDIR" ]; then
+        err "Working directory not found: $WORKDIR"
+        add_check "service_installation" "workdir_validation" "failed" "directory missing"
+        add_error "service_installation" "Working directory does not exist"
+        end_phase "service_installation" "failed"
+    else
+        add_check "service_installation" "workdir_validation" "success" "$WORKDIR exists"
+    fi
     
     if [ -d "$SERVICE_DIR" ]; then
-        log "Installing systemd services..."
+        log "Generating systemd service files from templates..."
         
-        # Copy service files
-        sudo cp "$SERVICE_DIR"/sieger-*.service /etc/systemd/system/
+        # Process each service template
+        for service_template in "$SERVICE_DIR"/sieger-*.service; do
+            SERVICE_NAME=$(basename "$service_template")
+            SERVICE_FILE="/tmp/$SERVICE_NAME"
+            
+            log "Processing $SERVICE_NAME..."
+            
+            # Replace placeholders with actual values
+            sed -e "s|{{DEPLOY_USER}}|$DEPLOY_USER|g" \
+                -e "s|{{DEPLOY_GROUP}}|$DEPLOY_GROUP|g" \
+                -e "s|{{WORKDIR}}|$WORKDIR|g" \
+                -e "s|{{VENV_PYTHON}}|$VENV_PYTHON|g" \
+                "$service_template" > "$SERVICE_FILE"
+            
+            # Copy to systemd directory
+            sudo cp "$SERVICE_FILE" /etc/systemd/system/
+            log "$SERVICE_NAME generated and installed ✓"
+            rm -f "$SERVICE_FILE"
+        done
+        
+        # Reload systemd
         sudo systemctl daemon-reload
+        log "systemd daemon reloaded ✓"
+        add_check "service_installation" "systemd_reload" "success" "daemon reloaded"
         
+        # Enable and start services
         for service in sieger-inspection sieger-api; do
             # Enable service
             if sudo systemctl enable "$service"; then
@@ -706,8 +786,8 @@ if [ "$VALIDATE_ONLY" == false ]; then
                 add_error "service_installation" "Failed to enable $service"
             fi
             
-            # Restart service (handles already-running case)
-            if sudo systemctl restart "$service"; then
+            # Start service
+            if sudo systemctl start "$service"; then
                 log "$service: Started ✓"
                 add_check "service_installation" "$service" "success" "enabled and started"
             else
@@ -721,6 +801,44 @@ if [ "$VALIDATE_ONLY" == false ]; then
         add_check "service_installation" "services" "failed" "directory missing"
         add_error "service_installation" "Service files not found"
         end_phase "service_installation" "failed"
+    fi
+    
+    # Install nginx configuration
+    if [ -d "$NGINX_DIR" ]; then
+        log "Installing nginx configuration..."
+        
+        if [ -f "$NGINX_DIR/sieger.conf" ]; then
+            sudo cp "$NGINX_DIR/sieger.conf" /etc/nginx/sites-enabled/
+            log "nginx config copied to /etc/nginx/sites-enabled/ ✓"
+            
+            # Test nginx configuration
+            if sudo nginx -t; then
+                log "nginx configuration test passed ✓"
+                add_check "service_installation" "nginx_config" "success" "valid"
+                
+                # Restart nginx
+                if sudo systemctl restart nginx; then
+                    log "nginx restarted ✓"
+                    add_check "service_installation" "nginx_restart" "success" "active"
+                else
+                    err "nginx restart failed"
+                    add_check "service_installation" "nginx_restart" "failed" "restart error"
+                    add_error "service_installation" "Failed to restart nginx"
+                fi
+            else
+                err "nginx configuration test failed"
+                add_check "service_installation" "nginx_config" "failed" "invalid"
+                add_error "service_installation" "nginx configuration is invalid"
+            fi
+        else
+            warn "nginx configuration file not found: $NGINX_DIR/sieger.conf"
+            add_check "service_installation" "nginx_config" "warning" "file not found"
+            add_warning "service_installation" "nginx configuration not installed"
+        fi
+    else
+        warn "nginx directory not found: $NGINX_DIR"
+        add_check "service_installation" "nginx_dir" "warning" "directory missing"
+        add_warning "service_installation" "nginx configuration directory missing"
     fi
     
     end_phase "service_installation" "success"

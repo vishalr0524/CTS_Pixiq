@@ -5,11 +5,11 @@ After=network.target
 
 [Service]
 Type=simple
-User=sieger
-Group=sieger
-WorkingDirectory=/opt/sieger/sieger-ghcl-cv
-Environment=PYTHONPATH=/opt/sieger/sieger-ghcl-cv
-ExecStart=/opt/sieger/venv/bin/python -m src.services.inspection_service
+User={{DEPLOY_USER}}
+Group={{DEPLOY_GROUP}}
+WorkingDirectory={{WORKDIR}}
+Environment=PYTHONPATH={{WORKDIR}}
+ExecStart={{VENV_PYTHON}} -m src.services.inspection_service
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
