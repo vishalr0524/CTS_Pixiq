@@ -324,6 +324,7 @@ fi
 
 add_phase "preflight"
 add_phase "tools_installation"
+add_phase "dvc_setup"
 add_phase "authentication"
 add_phase "model_files"
 add_phase "python_environment"
@@ -465,6 +466,8 @@ if [ "$VALIDATE_ONLY" == false ]; then
     if check_command "pip3"; then
         log "Installing DVC with Azure support..."
         if pip3 install "dvc[azure]" &> /dev/null; then
+            # Refresh command cache so bash finds the new 'dvc' command immediately
+            hash -r
             DVC_VERSION=$(dvc --version 2>/dev/null || echo "unknown")
             log "DVC installed: $DVC_VERSION ✓"
             add_check "dvc_setup" "dvc_install" "success" "$DVC_VERSION"
