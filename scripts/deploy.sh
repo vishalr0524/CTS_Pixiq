@@ -74,6 +74,9 @@ fi
 # /usr/local/bin is where uv is now installed (system-wide)
 export PATH="$PATH:/usr/local/bin:/root/.local/bin:$HOME/.local/bin"
 
+# Refresh command cache to find newly installed/moved tools
+hash -r 2>/dev/null || true
+
 # Mode flags
 VALIDATE_ONLY=false
 UPDATE_MODE=false
