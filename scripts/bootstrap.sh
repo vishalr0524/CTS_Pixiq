@@ -257,6 +257,12 @@ else
     COMMIT=$(git rev-parse --short HEAD)
     log "Repository cloned successfully"
     add_check "repo_cloned" "success" "branch: $REPO_BRANCH, commit: $COMMIT"
+    
+    # Ensure proper ownership of cloned repository
+    if [ -n "${SUDO_USER:-}" ] && [ "$EUID" -eq 0 ]; then
+        log "Setting repository ownership to $SUDO_USER..."
+        chown -R "$SUDO_USER:$SUDO_USER" "$REPO_DIR"
+    fi
 fi
 
 # ── Step 5: Generate bootstrap report ────────────────────────────────────────

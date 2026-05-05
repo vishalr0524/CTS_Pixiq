@@ -529,25 +529,46 @@ if [ "$VALIDATE_ONLY" == false ]; then
     log "Configuring Azure Storage connection string..."
     if [ -n "${AZURE_STORAGE_CONNECTION_STRING:-}" ]; then
         log "Using AZURE_STORAGE_CONNECTION_STRING from environment ✓"
+        log "DVC will read credentials directly from environment variable"
         add_check "dvc_setup" "connection_string" "success" "from environment"
     else
         warn "AZURE_STORAGE_CONNECTION_STRING not set in environment"
         read -p "Enter Azure Storage connection string (or press Enter to skip): " CONN_STRING
         if [ -n "$CONN_STRING" ]; then
             export AZURE_STORAGE_CONNECTION_STRING="$CONN_STRING"
+            log "Connection string exported to current session"
             add_check "dvc_setup" "connection_string" "success" "manually entered"
+            
+            # Optionally write to .dvc/config.local for persistence
+            read -p "Save connection string to .dvc/config.local for persistence? (y/N): " SAVE_CONFIG
+            if [[ "$SAVE_CONFIG" =~ ^[Yy]$ ]]; then
+                log "Writing connection string to .dvc/config.local..."
+                
+                # Ensure .dvc directory has proper ownership
+                if [ -d "$PROJECT_ROOT/.dvc" ]; then
+                    if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+                        chown -R "$SUDO_USER:$SUDO_USER" "$PROJECT_ROOT/.dvc"
+                    elif [ "$EUID" -eq 0 ]; then
+                        chmod -R u+w "$PROJECT_ROOT/.dvc"
+                    fi
+                fi
+                
+                if dvc remote modify --local azure connection_string "$AZURE_STORAGE_CONNECTION_STRING" 2>/dev/null; then
+                    log "Connection string saved to .dvc/config.local ✓"
+                    add_check "dvc_setup" "dvc_remote_config" "success" "persisted to config.local"
+                else
+                    warn "Failed to write to .dvc/config.local (permission issue)"
+                    log "Connection string is available in current session only"
+                    add_check "dvc_setup" "dvc_remote_config" "warning" "env var only (not persisted)"
+                fi
+            else
+                log "Connection string available in current session only"
+                add_check "dvc_setup" "dvc_remote_config" "success" "env var set (not persisted)"
+            fi
         else
             add_check "dvc_setup" "connection_string" "warning" "not provided"
             add_warning "dvc_setup" "Connection string not configured — DVC pull will fail"
         fi
-    fi
-    
-    # Configure DVC local config with connection string
-    if [ -n "${AZURE_STORAGE_CONNECTION_STRING:-}" ]; then
-        log "Setting DVC remote connection string..."
-        dvc remote modify --local azure connection_string "$AZURE_STORAGE_CONNECTION_STRING"
-        log "DVC remote configured ✓"
-        add_check "dvc_setup" "dvc_remote_config" "success" "connection string set"
     fi
     
     end_phase "dvc_setup" "success"
