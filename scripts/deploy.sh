@@ -45,6 +45,17 @@ REPORT_DIR="/opt/sieger"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 REPORT_FILE="$REPORT_DIR/deployment_report_$TIMESTAMP.json"
 BOOTSTRAP_REPORT="/tmp/bootstrap_report.json"
+DEPLOY_FLAGS="/tmp/pixiq_deploy_flags"
+
+# Ensure report directory exists and is writable
+if [ ! -d "$REPORT_DIR" ]; then
+    mkdir -p "$REPORT_DIR" 2>/dev/null || sudo mkdir -p "$REPORT_DIR"
+fi
+
+# Ensure deployment flags file is writable
+if [ -f "$DEPLOY_FLAGS" ]; then
+    chmod 666 "$DEPLOY_FLAGS" 2>/dev/null || sudo chmod 666 "$DEPLOY_FLAGS" 2>/dev/null || true
+fi
 
 # Adjust PATH for root user to include local bin directories
 if [ "$EUID" -eq 0 ]; then
@@ -228,10 +239,15 @@ generate_report() {
   "phases": [
 EOF
     
-    # Add bootstrap phase if report exists
+    # Add bootstrap phase if report exists and is readable
     if [ -f "$BOOTSTRAP_REPORT" ]; then
-        cat "$BOOTSTRAP_REPORT" >> "$REPORT_FILE"
-        echo "," >> "$REPORT_FILE"
+        # Ensure we can read the bootstrap report
+        if [ -r "$BOOTSTRAP_REPORT" ]; then
+            cat "$BOOTSTRAP_REPORT" >> "$REPORT_FILE" 2>/dev/null || true
+            echo "," >> "$REPORT_FILE"
+        else
+            warn "Bootstrap report exists but is not readable, skipping..."
+        fi
     fi
     
     # Add deployment phases
@@ -287,7 +303,7 @@ EOF
 
   ],
   "system_info": {
-    "reboot_required": $([ -f /tmp/pixiq_deploy_flags ] && grep -q "REBOOT_REQUIRED=true" /tmp/pixiq_deploy_flags && echo "true" || echo "false")
+    "reboot_required": $([ -f "$DEPLOY_FLAGS" ] && grep -q "REBOOT_REQUIRED=true" "$DEPLOY_FLAGS" && echo "true" || echo "false")
   },
   "validation_summary": {
     "total_checks": $total_checks,
@@ -422,7 +438,7 @@ if [ "$VALIDATE_ONLY" == false ]; then
             log "System setup completed ✓"
             
             # Check if system_setup flagged a reboot requirement
-            if [ -f /tmp/pixiq_deploy_flags ] && grep -q "REBOOT_REQUIRED=true" /tmp/pixiq_deploy_flags; then
+            if [ -f "$DEPLOY_FLAGS" ] && grep -q "REBOOT_REQUIRED=true" "$DEPLOY_FLAGS"; then
                 warn "SYSTEM REBOOT REQUIRED for hardware performance changes to take effect."
                 add_warning "tools_installation" "System reboot required for nvpmodel (MAXN) performance mode"
             fi

@@ -45,6 +45,12 @@ INSTALL_DIR="${INSTALL_DIR:-/opt/sieger}"
 REPO_DIR="$INSTALL_DIR/cone-transport-system-pixiq"
 REPORT_FILE="/tmp/bootstrap_report.json"
 
+# Handle existing report file to prevent permission errors
+if [ -f "$REPORT_FILE" ]; then
+    log "Removing existing bootstrap report file..."
+    rm -f "$REPORT_FILE" 2>/dev/null || true
+fi
+
 # JSON report structure
 declare -A BOOTSTRAP_CHECKS
 
