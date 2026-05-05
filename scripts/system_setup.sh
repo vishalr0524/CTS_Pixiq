@@ -318,14 +318,28 @@ fi
 # ============================================================================
 step "5/7  Python environment"
 
-# Install uv (fast Python package manager)
+# Install uv (fast Python package manager) to system-wide location
 if command -v uv &> /dev/null; then
     log "uv already installed: $(uv --version)"
 else
     log "Installing uv..."
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
-    log "uv installed: $(uv --version)"
+    
+    # Try to install to system location directly
+    UV_INSTALL_DIR=/usr/local/bin curl -LsSf https://astral.sh/uv/install.sh | sh || {
+        # Fallback: install to home and move to system location
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        if [ -f "$HOME/.local/bin/uv" ]; then
+            mv "$HOME/.local/bin/uv" /usr/local/bin/uv
+            mv "$HOME/.local/bin/uvx" /usr/local/bin/uvx 2>/dev/null || true
+            chmod +x /usr/local/bin/uv* 2>/dev/null || true
+        fi
+    }
+    
+    if command -v uv &> /dev/null; then
+        log "uv installed: $(uv --version)"
+    else
+        warn "uv installation may have issues, proceeding anyway"
+    fi
 fi
 
 # Create sieger user if it doesn't exist

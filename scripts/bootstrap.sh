@@ -174,7 +174,11 @@ SSH_KEY_PATH="$HOME/.ssh/id_ed25519"
 
 if [ -f "$SSH_KEY_PATH" ]; then
     log "SSH key already exists: $SSH_KEY_PATH"
-    cat "$SSH_KEY_PATH"
+    # Don't expose private key - just verify it exists
+    if ssh-keygen -l -f "$SSH_KEY_PATH" &>/dev/null; then
+        SSH_FINGERPRINT=$(ssh-keygen -l -f "$SSH_KEY_PATH" | awk '{print $2}')
+        log "Key fingerprint: $SSH_FINGERPRINT"
+    fi
     add_check "ssh_key_exists" "success" "$SSH_KEY_PATH"
 else
     warn "No SSH key found. Generating new SSH key..."

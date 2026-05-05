@@ -52,17 +52,27 @@ if [ ! -d "$REPORT_DIR" ]; then
     mkdir -p "$REPORT_DIR" 2>/dev/null || sudo mkdir -p "$REPORT_DIR"
 fi
 
+# Ensure report directory has proper permissions for current user
+if [ ! -w "$REPORT_DIR" ]; then
+    if [ "$EUID" -eq 0 ]; then
+        # Running as root - set ownership to sudo user if available
+        if [ -n "${SUDO_USER:-}" ]; then
+            chown -R "$SUDO_USER:$SUDO_USER" "$REPORT_DIR"
+        fi
+    else
+        # Running as non-root - try to fix permissions
+        sudo chown -R "$(whoami):$(whoami)" "$REPORT_DIR" 2>/dev/null || sudo chmod 777 "$REPORT_DIR" 2>/dev/null || true
+    fi
+fi
+
 # Ensure deployment flags file is writable
 if [ -f "$DEPLOY_FLAGS" ]; then
     chmod 666 "$DEPLOY_FLAGS" 2>/dev/null || sudo chmod 666 "$DEPLOY_FLAGS" 2>/dev/null || true
 fi
 
-# Adjust PATH for root user to include local bin directories
-if [ "$EUID" -eq 0 ]; then
-    export PATH="$PATH:/root/.local/bin:/usr/local/bin"
-else
-    export PATH="$PATH:$HOME/.local/bin"
-fi
+# Adjust PATH to include system and user bin directories
+# /usr/local/bin is where uv is now installed (system-wide)
+export PATH="$PATH:/usr/local/bin:/root/.local/bin:$HOME/.local/bin"
 
 # Mode flags
 VALIDATE_ONLY=false
