@@ -46,6 +46,13 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 REPORT_FILE="$REPORT_DIR/deployment_report_$TIMESTAMP.json"
 BOOTSTRAP_REPORT="/tmp/bootstrap_report.json"
 
+# Adjust PATH for root user to include local bin directories
+if [ "$EUID" -eq 0 ]; then
+    export PATH="$PATH:/root/.local/bin:/usr/local/bin"
+else
+    export PATH="$PATH:$HOME/.local/bin"
+fi
+
 # Mode flags
 VALIDATE_ONLY=false
 UPDATE_MODE=false
@@ -438,6 +445,20 @@ if [ "$VALIDATE_ONLY" == false ]; then
         add_warning "tools_installation" "System setup script not found — manual setup may be required"
     fi
     
+    # Install DVC with Azure support
+    log "Installing DVC with Azure support..."
+    if pip3 install "dvc[azure]" &> /dev/null; then
+        # Refresh command cache so bash finds the new 'dvc' command immediately
+        hash -r
+        DVC_VERSION=$(dvc --version 2>/dev/null || echo "unknown")
+        log "DVC installed: $DVC_VERSION ✓"
+        add_check "tools_installation" "dvc_install" "success" "$DVC_VERSION"
+    else
+        err "Failed to install DVC"
+        add_check "tools_installation" "dvc_install" "failed" "pip install failed"
+        add_error "tools_installation" "DVC installation failed"
+    fi
+    
     # Check required tools
     for tool in dvc az uv systemctl; do
         if check_command "$tool"; then
@@ -459,23 +480,18 @@ fi
 # ============================================================================
 
 if [ "$VALIDATE_ONLY" == false ]; then
-    step "Phase 3: DVC Setup"
+    step "Phase 3: DVC Configuration"
     start_phase "dvc_setup"
     
-    # Install DVC with Azure support
-    if check_command "pip3"; then
-        log "Installing DVC with Azure support..."
-        if pip3 install "dvc[azure]" &> /dev/null; then
-            # Refresh command cache so bash finds the new 'dvc' command immediately
-            hash -r
-            DVC_VERSION=$(dvc --version 2>/dev/null || echo "unknown")
-            log "DVC installed: $DVC_VERSION ✓"
-            add_check "dvc_setup" "dvc_install" "success" "$DVC_VERSION"
-        else
-            err "Failed to install DVC"
-            add_check "dvc_setup" "dvc_install" "failed" "pip install failed"
-            add_error "dvc_setup" "DVC installation failed"
-        fi
+    # Verify DVC is available
+    if ! check_command "dvc"; then
+        err "DVC not found — should have been installed in Phase 2"
+        add_check "dvc_setup" "dvc_available" "failed" "command not found"
+        add_error "dvc_setup" "DVC is not available"
+        end_phase "dvc_setup" "failed"
+    else
+        log "DVC available: $(dvc --version 2>/dev/null)"
+        add_check "dvc_setup" "dvc_available" "success" "command found"
     fi
     
     # Verify DVC remote is configured from repo
