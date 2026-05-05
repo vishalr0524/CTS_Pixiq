@@ -220,7 +220,13 @@ generate_report() {
     local end_timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
     local duration=$((end_time - START_TIME))
     
-    mkdir -p "$REPORT_DIR"
+    # Ensure report directory is writable, fallback to /tmp if not
+    if [ ! -w "$REPORT_DIR" ]; then
+        warn "Cannot write to $REPORT_DIR, using /tmp instead"
+        REPORT_FILE="/tmp/deployment_report_$TIMESTAMP.json"
+    fi
+    
+    mkdir -p "$(dirname "$REPORT_FILE")" 2>/dev/null || true
     
     # Get system info
     local hostname=$(hostname)
@@ -552,6 +558,14 @@ if [ "$VALIDATE_ONLY" == false ]; then
             log "Connection string exported to current session"
             add_check "dvc_setup" "connection_string" "success" "manually entered"
             
+            # Verify the connection string is properly set
+            if [ -z "${AZURE_STORAGE_CONNECTION_STRING}" ]; then
+                err "Failed to export connection string"
+                add_error "dvc_setup" "Connection string export failed"
+                end_phase "dvc_setup" "failed"
+                exit 1
+            fi
+            
             # Optionally write to .dvc/config.local for persistence
             read -p "Save connection string to .dvc/config.local for persistence? (y/N): " SAVE_CONFIG
             if [[ "$SAVE_CONFIG" =~ ^[Yy]$ ]]; then
@@ -598,7 +612,12 @@ if [ "$VALIDATE_ONLY" == false ]; then
     if check_command "dvc"; then
         log "Running dvc pull..."
         
-        if retry_command "dvc pull"; then
+        # Verify connection string is set before pulling
+        if [ -z "${AZURE_STORAGE_CONNECTION_STRING:-}" ]; then
+            err "AZURE_STORAGE_CONNECTION_STRING not set — cannot authenticate with Azure"
+            add_error "model_files" "Azure connection string is required for DVC pull"
+            end_phase "model_files" "failed"
+        elif timeout 300 dvc pull -v 2>&1 | tee -a /tmp/dvc_pull.log; then
             log "DVC pull completed ✓"
             add_check "model_files" "dvc_pull" "success" "completed"
             
@@ -617,8 +636,9 @@ if [ "$VALIDATE_ONLY" == false ]; then
             done
         else
             err "DVC pull failed"
+            log "Check /tmp/dvc_pull.log for details"
             add_check "model_files" "dvc_pull" "failed" "pull failed"
-            add_error "model_files" "DVC pull failed — check Azure authentication"
+            add_error "model_files" "DVC pull failed — check Azure authentication and /tmp/dvc_pull.log"
             end_phase "model_files" "failed"
         fi
     else
@@ -640,21 +660,57 @@ if [ "$VALIDATE_ONLY" == false ]; then
     start_phase "python_environment"
     
     if check_command "uv"; then
+        # Detect system Python 3.10 explicitly (Jetson requirement)
+        SYSTEM_PYTHON310=""
+        for py_candidate in python3.10 /usr/bin/python3.10 /usr/local/bin/python3.10; do
+            if command -v "$py_candidate" &>/dev/null; then
+                SYSTEM_PYTHON310="$py_candidate"
+                break
+            fi
+        done
+        
+        if [ -z "$SYSTEM_PYTHON310" ]; then
+            err "Python 3.10 not found — Jetson Orin NX requires Python 3.10.x for CUDA/TensorRT"
+            add_check "python_environment" "python310_check" "failed" "python 3.10 not found"
+            add_error "python_environment" "Python 3.10 not found on system"
+            end_phase "python_environment" "failed"
+            return 1
+        fi
+        
+        PYTHON_VERSION=$($SYSTEM_PYTHON310 --version 2>&1 | awk '{print $2}')
+        log "Using system Python: $SYSTEM_PYTHON310 (version $PYTHON_VERSION)"
+        add_check "python_environment" "python310_check" "success" "$PYTHON_VERSION at $SYSTEM_PYTHON310"
+        
         # Create or update virtual environment
         if [ -d ".venv" ]; then
-            log "Virtual environment exists ✓"
-            add_check "python_environment" "venv_exists" "success" "found"
-        else
-            log "Creating virtual environment with Python 3.10 and system-site-packages..."
-            if uv venv --python 3.10 --system-site-packages; then
-                log "Virtual environment created ✓"
-                add_check "python_environment" "venv_created" "success" "python 3.10 with system-site-packages"
+            log "Virtual environment exists — removing to ensure Python 3.10 compatibility..."
+            rm -rf .venv
+            add_check "python_environment" "venv_cleanup" "success" "removed existing venv"
+        fi
+        
+        log "Creating virtual environment with Python 3.10 and system-site-packages..."
+        if uv venv --python "$SYSTEM_PYTHON310" --system-site-packages; then
+            log "Virtual environment created ✓"
+            add_check "python_environment" "venv_created" "success" "python $PYTHON_VERSION with system-site-packages"
+            
+            # Verify the venv is using the correct Python version
+            VENV_PYTHON_VERSION=$(.venv/bin/python --version 2>&1 | awk '{print $2}')
+            if [[ "$VENV_PYTHON_VERSION" =~ ^3\.10\. ]]; then
+                log "Virtual environment Python version verified: $VENV_PYTHON_VERSION ✓"
+                add_check "python_environment" "venv_python_version" "success" "$VENV_PYTHON_VERSION"
             else
-                err "Failed to create virtual environment"
-                add_check "python_environment" "venv_created" "failed" "uv venv failed"
-                add_error "python_environment" "Virtual environment creation failed"
+                err "Virtual environment is using Python $VENV_PYTHON_VERSION instead of 3.10.x"
+                err "This will cause CUDA/TensorRT compatibility issues"
+                add_check "python_environment" "venv_python_version" "failed" "$VENV_PYTHON_VERSION (expected 3.10.x)"
+                add_error "python_environment" "Virtual environment using wrong Python version"
                 end_phase "python_environment" "failed"
+                return 1
             fi
+        else
+            err "Failed to create virtual environment"
+            add_check "python_environment" "venv_created" "failed" "uv venv failed"
+            add_error "python_environment" "Virtual environment creation failed"
+            end_phase "python_environment" "failed"
         fi
         
         log "Syncing dependencies with uv..."

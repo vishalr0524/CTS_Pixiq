@@ -30,6 +30,20 @@ import sys
 import time
 from pathlib import Path
 
+# Check Python version first — Jetson requires Python 3.10.x for CUDA/TensorRT
+if sys.version_info < (3, 10) or sys.version_info >= (3, 11):
+    print(
+        f"ERROR: Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro} detected\n"
+        f"Jetson Orin NX requires Python 3.10.x for CUDA/TensorRT compatibility.\n"
+        f"Current Python: {sys.executable}\n"
+        f"Expected: Python 3.10.12 or similar\n\n"
+        f"Solution: Recreate the virtual environment with Python 3.10:\n"
+        f"  uv venv --python /usr/bin/python3.10 --system-site-packages\n"
+        f"  uv sync\n",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
