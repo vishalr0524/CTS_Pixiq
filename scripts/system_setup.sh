@@ -353,8 +353,20 @@ step "6/7  Jetson power & performance"
 
 # Set to maximum performance mode (MAXN)
 if command -v nvpmodel &> /dev/null; then
-    nvpmodel -m 2 2>/dev/null || true
-    log "Power mode set to MAXN (maximum performance)"
+    # Check current mode to avoid redundant calls and reboot prompts
+    CURRENT_MODE_ID=$(nvpmodel -q 2>/dev/null | grep "NV Power Mode" | grep -o "[0-9]*$" || echo "unknown")
+    
+    if [[ "$CURRENT_MODE_ID" != "0" ]]; then
+        log "Changing Power Mode from $CURRENT_MODE_ID to 0 (MAXN)..."
+        # Use 'yes n' to decline immediate reboot if prompted
+        yes n | nvpmodel -m 0 2>/dev/null || true
+        echo "REBOOT_REQUIRED=true" >> /tmp/pixiq_deploy_flags 2>/dev/null || true
+    else
+        log "Power mode is already 0 (MAXN)"
+    fi
+    
+    DISPLAY_MODE=$(nvpmodel -q 2>/dev/null | grep "NV Power Mode" | sed 's/.*: //' || echo "MAXN")
+    log "Current status: $DISPLAY_MODE"
 else
     warn "nvpmodel not found — cannot set power mode"
 fi

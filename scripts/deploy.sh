@@ -279,6 +279,9 @@ EOF
     cat >> "$REPORT_FILE" <<EOF
 
   ],
+  "system_info": {
+    "reboot_required": $([ -f /tmp/pixiq_deploy_flags ] && grep -q "REBOOT_REQUIRED=true" /tmp/pixiq_deploy_flags && echo "true" || echo "false")
+  },
   "validation_summary": {
     "total_checks": $total_checks,
     "passed": $passed,
@@ -404,10 +407,17 @@ if [ "$VALIDATE_ONLY" == false ]; then
     if [ -f "$SETUP_SCRIPT" ]; then
         log "Running system setup script..."
         
-        # Capture console output
+        # Capture console output with unbuffered output
         SETUP_LOG=$(mktemp)
-        if sudo "$SETUP_SCRIPT" 2>&1 | tee "$SETUP_LOG"; then
+        # Use stdbuf to prevent the "blank hang" caused by buffering prompts
+        if sudo stdbuf -oL -eL "$SETUP_SCRIPT" 2>&1 | tee "$SETUP_LOG"; then
             log "System setup completed ✓"
+            
+            # Check if system_setup flagged a reboot requirement
+            if [ -f /tmp/pixiq_deploy_flags ] && grep -q "REBOOT_REQUIRED=true" /tmp/pixiq_deploy_flags; then
+                warn "SYSTEM REBOOT REQUIRED for hardware performance changes to take effect."
+                add_warning "tools_installation" "System reboot required for nvpmodel (MAXN) performance mode"
+            fi
             
             # Add console output to report (limit to first 100 lines)
             SETUP_OUTPUT=$(cat "$SETUP_LOG" | head -n 100 | tr '\n' ' ' | tr '"' "'" )
