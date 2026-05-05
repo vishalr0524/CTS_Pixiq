@@ -724,13 +724,11 @@ if [ "$VALIDATE_ONLY" == false ]; then
             end_phase "python_environment" "failed"
         fi
         
-        # Validate critical imports
+        # Validate critical imports using uv run (ensures proper environment setup)
         log "Validating critical imports..."
         
-        PYTHON_EXEC=".venv/bin/python"
-        
         for module in pypylon tensorrt torch; do
-            if $PYTHON_EXEC -c "import $module" 2>/dev/null; then
+            if uv run python -c "import $module" 2>/dev/null; then
                 log "$module: OK ✓"
                 add_check "python_environment" "${module}_import" "success" "importable"
             else
