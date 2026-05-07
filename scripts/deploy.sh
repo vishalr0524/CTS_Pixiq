@@ -1,23 +1,39 @@
 #!/usr/bin/env bash
 # ============================================================================
-# Main Deployment Script — pixIQ (Stage 2)
+# Deploy Script — pixIQ Inspection System (Stage 2)
 # ============================================================================
 #
-# Comprehensive deployment orchestrator for pixIQ yarn cone inspection system.
-# This script handles the full deployment after bootstrap completes.
+# Main deployment orchestrator. Run this manually on the Jetson Orin NX
+# AFTER bootstrap.sh has completed successfully.
 #
 # Usage:
-#     ./scripts/deploy.sh                 # Full deployment
-#     ./scripts/deploy.sh --update        # Update existing installation
-#     ./scripts/deploy.sh --rollback      # Rollback to previous state
-#     ./scripts/deploy.sh --validate-only # Only run health checks
+#     cd /opt/sieger/cone-transport-system-pixiq
+#     ./scripts/deploy.sh                  # Full deployment (default)
+#     ./scripts/deploy.sh --validate-only  # Health checks only (no changes)
+#     ./scripts/deploy.sh --update         # Pull latest code & re-deploy
+#     ./scripts/deploy.sh --rollback       # Restore previous state
 #
-# This script is IDEMPOTENT — safe to re-run after failures.
+# What this script does:
+#     1. Pre-flight: verifies architecture, JetPack, GPU, and network
+#     2. Tools: runs system_setup.sh (uv, pylon SDK, TensorRT, power mode)
+#     3. DVC: configures Azure connection string and storage remote
+#     4. Models: pulls .pt weight files from Azure via DVC
+#     5. Python: downloads Jetson torch wheels, creates venv, runs uv sync
+#     6. Config: validates / backs up src/config.json
+#     7. TensorRT: exports .pt → .engine FP16 engines (~30-45 min)
+#     8. Services: installs and starts sieger-inspection + sieger-api
+#     9. Validation: end-to-end health checks on all services
 #
-# Prerequisites (installed by bootstrap.sh):
-#     - git, curl, wget
-#     - GitHub SSH access configured
+# This script is IDEMPOTENT — safe to re-run after any failure.
+#
+# Prerequisites (set up by bootstrap.sh):
+#     - git, curl, wget installed
+#     - GitHub SSH key configured and authenticated
 #     - Repository cloned to /opt/sieger/cone-transport-system-pixiq
+#
+# Reports:
+#     Bootstrap:  /tmp/bootstrap_report.json        (written by bootstrap.sh)
+#     Deployment: /opt/sieger/deploy_report_<ts>.json (written by this script)
 #
 # ============================================================================
 
@@ -241,6 +257,12 @@ generate_report() {
         gpu_info=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo "unknown")
     fi
     
+    # Reference bootstrap report as a path — kept separate (not inlined)
+    local bootstrap_ref="null"
+    if [ -f "$BOOTSTRAP_REPORT" ] && [ -r "$BOOTSTRAP_REPORT" ]; then
+        bootstrap_ref="\"$BOOTSTRAP_REPORT\""
+    fi
+
     # Start JSON report
     cat > "$REPORT_FILE" <<EOF
 {
@@ -255,19 +277,10 @@ generate_report() {
     "jetpack_version": "$jetpack_version",
     "gpu": "$gpu_info"
   },
+  "bootstrap_report": $bootstrap_ref,
   "phases": [
 EOF
-    
-    # Add bootstrap phase if report exists and is readable
-    if [ -f "$BOOTSTRAP_REPORT" ]; then
-        # Ensure we can read the bootstrap report
-        if [ -r "$BOOTSTRAP_REPORT" ]; then
-            cat "$BOOTSTRAP_REPORT" >> "$REPORT_FILE" 2>/dev/null || true
-            echo "," >> "$REPORT_FILE"
-        else
-            warn "Bootstrap report exists but is not readable, skipping..."
-        fi
-    fi
+
     
     # Add deployment phases
     local first_phase=true
@@ -546,56 +559,85 @@ if [ "$VALIDATE_ONLY" == false ]; then
     
     # Set Azure Storage connection string
     log "Configuring Azure Storage connection string..."
-    if [ -n "${AZURE_STORAGE_CONNECTION_STRING:-}" ]; then
-        log "Using AZURE_STORAGE_CONNECTION_STRING from environment ✓"
-        log "DVC will read credentials directly from environment variable"
-        add_check "dvc_setup" "connection_string" "success" "from environment"
-    else
-        warn "AZURE_STORAGE_CONNECTION_STRING not set in environment"
-        read -p "Enter Azure Storage connection string (or press Enter to skip): " CONN_STRING
-        if [ -n "$CONN_STRING" ]; then
-            export AZURE_STORAGE_CONNECTION_STRING="$CONN_STRING"
-            log "Connection string exported to current session"
-            add_check "dvc_setup" "connection_string" "success" "manually entered"
-            
-            # Verify the connection string is properly set
-            if [ -z "${AZURE_STORAGE_CONNECTION_STRING}" ]; then
-                err "Failed to export connection string"
-                add_error "dvc_setup" "Connection string export failed"
-                end_phase "dvc_setup" "failed"
-                exit 1
+
+    _save_dvc_conn_string() {
+        local cs="$1"
+        if [ -d "$PROJECT_ROOT/.dvc" ]; then
+            if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
+                chown -R "$SUDO_USER:$SUDO_USER" "$PROJECT_ROOT/.dvc"
+            elif [ "$EUID" -eq 0 ]; then
+                chmod -R u+w "$PROJECT_ROOT/.dvc"
             fi
-            
-            # Optionally write to .dvc/config.local for persistence
-            read -p "Save connection string to .dvc/config.local for persistence? (y/N): " SAVE_CONFIG
-            if [[ "$SAVE_CONFIG" =~ ^[Yy]$ ]]; then
-                log "Writing connection string to .dvc/config.local..."
-                
-                # Ensure .dvc directory has proper ownership
-                if [ -d "$PROJECT_ROOT/.dvc" ]; then
-                    if [ "$EUID" -eq 0 ] && [ -n "${SUDO_USER:-}" ]; then
-                        chown -R "$SUDO_USER:$SUDO_USER" "$PROJECT_ROOT/.dvc"
-                    elif [ "$EUID" -eq 0 ]; then
-                        chmod -R u+w "$PROJECT_ROOT/.dvc"
-                    fi
-                fi
-                
-                if dvc remote modify --local azure connection_string "$AZURE_STORAGE_CONNECTION_STRING" 2>/dev/null; then
-                    log "Connection string saved to .dvc/config.local ✓"
-                    add_check "dvc_setup" "dvc_remote_config" "success" "persisted to config.local"
-                else
-                    warn "Failed to write to .dvc/config.local (permission issue)"
-                    log "Connection string is available in current session only"
-                    add_check "dvc_setup" "dvc_remote_config" "warning" "env var only (not persisted)"
-                fi
-            else
-                log "Connection string available in current session only"
-                add_check "dvc_setup" "dvc_remote_config" "success" "env var set (not persisted)"
-            fi
-        else
-            add_check "dvc_setup" "connection_string" "warning" "not provided"
-            add_warning "dvc_setup" "Connection string not configured — DVC pull will fail"
         fi
+        if dvc remote modify --local azure connection_string "$cs" 2>/dev/null; then
+            log "Connection string saved to .dvc/config.local ✓"
+            add_check "dvc_setup" "dvc_remote_config" "success" "persisted to config.local"
+        else
+            warn "Failed to write to .dvc/config.local (permission issue) — env var only"
+            add_check "dvc_setup" "dvc_remote_config" "warning" "env var only (not persisted)"
+        fi
+    }
+
+    if [ -n "${AZURE_STORAGE_CONNECTION_STRING:-}" ]; then
+        # Show masked preview of existing value
+        _MASKED_PREVIEW=$(echo "${AZURE_STORAGE_CONNECTION_STRING}" | head -c 40)
+        warn "AZURE_STORAGE_CONNECTION_STRING is already set in environment:"
+        warn "  ${_MASKED_PREVIEW}..."
+        echo ""
+        read -p "Keep the existing connection string? (Y/n): " KEEP_EXISTING </dev/tty
+        if [[ ! "$KEEP_EXISTING" =~ ^[Nn]$ ]]; then
+            log "Keeping existing connection string ✓"
+            add_check "dvc_setup" "connection_string" "success" "from environment (kept)"
+        else
+            unset AZURE_STORAGE_CONNECTION_STRING
+            log "Will prompt for a new connection string."
+        fi
+    fi
+
+    # If not set (or user chose to replace), enter interactive re-prompt loop
+    if [ -z "${AZURE_STORAGE_CONNECTION_STRING:-}" ]; then
+        warn "AZURE_STORAGE_CONNECTION_STRING not set — entering connection string setup."
+        warn "Format: DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"
+        echo ""
+        while true; do
+            read -p "Enter Azure Storage connection string: " CONN_STRING </dev/tty
+            echo ""
+            if [ -z "$CONN_STRING" ]; then
+                warn "No connection string entered."
+                read -p "Skip connection string setup? DVC pull will FAIL without it. (y/N): " SKIP_CS </dev/tty
+                if [[ "$SKIP_CS" =~ ^[Yy]$ ]]; then
+                    add_check "dvc_setup" "connection_string" "warning" "skipped by operator"
+                    add_warning "dvc_setup" "Connection string not configured — DVC pull will fail"
+                    break
+                fi
+                continue
+            fi
+            # Show masked preview for confirmation
+            _PREVIEW=$(echo "$CONN_STRING" | head -c 40)
+            echo "  Preview: ${_PREVIEW}..."
+            read -p "Use this connection string? (y/n/re-enter): " CONFIRM </dev/tty
+            echo ""
+            if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
+                export AZURE_STORAGE_CONNECTION_STRING="$CONN_STRING"
+                log "Connection string confirmed and exported ✓"
+                add_check "dvc_setup" "connection_string" "success" "manually entered and confirmed"
+                # Offer persistence
+                read -p "Save to .dvc/config.local for future runs? (y/N): " SAVE_CONFIG </dev/tty
+                if [[ "$SAVE_CONFIG" =~ ^[Yy]$ ]]; then
+                    _save_dvc_conn_string "$AZURE_STORAGE_CONNECTION_STRING"
+                else
+                    log "Connection string available for this session only."
+                    add_check "dvc_setup" "dvc_remote_config" "success" "env var set (not persisted)"
+                fi
+                break
+            elif [[ "$CONFIRM" =~ ^[Nn]$ ]]; then
+                log "Re-entering connection string..."
+                continue
+            else
+                log "Re-entering connection string..."
+                continue
+            fi
+        done
     fi
     
     end_phase "dvc_setup" "success"
@@ -612,34 +654,63 @@ if [ "$VALIDATE_ONLY" == false ]; then
     if check_command "dvc"; then
         log "Running dvc pull..."
         
-        # Verify connection string is set before pulling
+        log "Verifying connection string is set before pulling..."
         if [ -z "${AZURE_STORAGE_CONNECTION_STRING:-}" ]; then
             err "AZURE_STORAGE_CONNECTION_STRING not set — cannot authenticate with Azure"
             add_error "model_files" "Azure connection string is required for DVC pull"
             end_phase "model_files" "failed"
-        elif timeout 300 dvc pull -v 2>&1 | tee -a /tmp/dvc_pull.log; then
-            log "DVC pull completed ✓"
-            add_check "model_files" "dvc_pull" "success" "completed"
-            
-            # Validate model files
-            for model in visible_yolo uv_yolo yarn_tail_v3; do
-                MODEL_FILE="weights/${model}.pt"
-                if [ -f "$MODEL_FILE" ]; then
-                    SIZE=$(du -h "$MODEL_FILE" | awk '{print $1}')
-                    log "$MODEL_FILE: $SIZE ✓"
-                    add_check "model_files" "$model" "success" "size: $SIZE"
-                else
-                    err "$MODEL_FILE not found"
-                    add_check "model_files" "$model" "failed" "file missing"
-                    add_error "model_files" "$MODEL_FILE is required"
-                fi
-            done
         else
-            err "DVC pull failed"
-            log "Check /tmp/dvc_pull.log for details"
-            add_check "model_files" "dvc_pull" "failed" "pull failed"
-            add_error "model_files" "DVC pull failed — check Azure authentication and /tmp/dvc_pull.log"
-            end_phase "model_files" "failed"
+            log "Starting DVC pull from Azure — this may take several minutes..."
+            echo ""
+            echo -e "  ${CYAN}[▶] Pulling model files from Azure DVC remote...${NC}"
+            echo ""
+
+            DVC_PULL_LOG="/tmp/dvc_pull_${TIMESTAMP}.log"
+            DVC_PULL_EXIT=0
+
+            # Launch dvc pull in background; tail its log live
+            ( dvc pull --verbose 2>&1 | tee "$DVC_PULL_LOG" ) &
+            DVC_PULL_PID=$!
+
+            # Heartbeat ticker: print elapsed time every 10 s so the
+            # operator can see progress instead of a blank pause
+            _PULL_START=$(date +%s)
+            while kill -0 "$DVC_PULL_PID" 2>/dev/null; do
+                sleep 10
+                _elapsed=$(( $(date +%s) - _PULL_START ))
+                printf "  ${YELLOW}[⏳] dvc pull still running — %ds elapsed...${NC}\n" "$_elapsed"
+            done
+
+            # Collect exit status
+            wait "$DVC_PULL_PID" || DVC_PULL_EXIT=$?
+
+            echo ""
+            if [ "$DVC_PULL_EXIT" -eq 0 ]; then
+                log "DVC pull completed successfully ✓"
+                add_check "model_files" "dvc_pull" "success" "completed"
+
+                # Validate model files
+                for model in visible_yolo uv_yolo yarn_tail_v3; do
+                    MODEL_FILE="weights/${model}.pt"
+                    if [ -f "$MODEL_FILE" ]; then
+                        SIZE=$(du -h "$MODEL_FILE" | awk '{print $1}')
+                        log "$MODEL_FILE: $SIZE ✓"
+                        add_check "model_files" "$model" "success" "size: $SIZE"
+                    else
+                        err "$MODEL_FILE not found after dvc pull"
+                        add_check "model_files" "$model" "failed" "file missing"
+                        add_error "model_files" "$MODEL_FILE is required but missing"
+                    fi
+                done
+
+                end_phase "model_files" "success"
+            else
+                err "DVC pull failed (exit code $DVC_PULL_EXIT)"
+                err "Log: $DVC_PULL_LOG"
+                add_check "model_files" "dvc_pull" "failed" "exit $DVC_PULL_EXIT — see $DVC_PULL_LOG"
+                add_error "model_files" "DVC pull failed — check Azure credentials and $DVC_PULL_LOG"
+                end_phase "model_files" "failed"
+            fi
         fi
     else
         err "DVC not available"
@@ -660,6 +731,41 @@ if [ "$VALIDATE_ONLY" == false ]; then
     start_phase "python_environment"
     
     if check_command "uv"; then
+        # ── Download Jetson torch wheels if not already present ──────────────────
+        # pyproject.toml references these wheel files with [tool.uv.sources]
+        # They are too large for git — downloaded from SharePoint on first deploy.
+        TORCH_WHL="torch-2.4.0a0+07cecf4168.nv24.5-cp310-cp310-linux_aarch64.whl"
+        TORCHVISION_WHL="torchvision-0.18.0a0+6043bc2-cp310-cp310-linux_aarch64.whl"
+        # ⚠ These URLs are intentionally hardcoded. Update them here if the wheel changes.
+        TORCH_URL="https://dhvani365-my.sharepoint.com/:u:/g/personal/vishal_dhvaniai_com/IQD_p8YR82VgTYogrlmPnnPtAaLmzskVt_M3CtUxge9WFps?download=1"
+        TORCHVISION_URL="https://dhvani365-my.sharepoint.com/:u:/g/personal/vishal_dhvaniai_com/IQD9rTvbhnyURbxfCkw5HqSsAS62Sx4jEUO5OwyvrgLZkQ4?download=1"
+
+        log "Checking Jetson PyTorch wheel files..."
+        for whl_file in "$TORCH_WHL" "$TORCHVISION_WHL"; do
+            if [ -f "$PROJECT_ROOT/$whl_file" ]; then
+                log "  $whl_file already present ✓"
+                add_check "python_environment" "${whl_file%%.*}_wheel" "success" "already present"
+            else
+                if [ "$whl_file" = "$TORCH_WHL" ]; then
+                    _WHL_URL="$TORCH_URL"
+                else
+                    _WHL_URL="$TORCHVISION_URL"
+                fi
+                log "  Downloading $whl_file ..."
+                if wget --show-progress -q -O "$PROJECT_ROOT/$whl_file" "$_WHL_URL"; then
+                    SIZE=$(du -h "$PROJECT_ROOT/$whl_file" | awk '{print $1}')
+                    log "  $whl_file downloaded ($SIZE) ✓"
+                    add_check "python_environment" "${whl_file%%.*}_wheel" "success" "downloaded $SIZE"
+                else
+                    err "  Failed to download $whl_file"
+                    add_check "python_environment" "${whl_file%%.*}_wheel" "failed" "download failed"
+                    add_error "python_environment" "Could not download $whl_file — check internet access"
+                fi
+            fi
+        done
+        echo ""
+
+        # ── Virtual environment ────────────────────────────────────────────────────
         # Detect system Python 3.10 explicitly (Jetson requirement)
         SYSTEM_PYTHON310=""
         for py_candidate in python3.10 /usr/bin/python3.10 /usr/local/bin/python3.10; do
@@ -1038,49 +1144,137 @@ generate_report
 END_TIME=$(date +%s)
 TOTAL_DURATION=$((END_TIME - START_TIME))
 
+# ── Operator-Friendly Final Summary ─────────────────────────────────────────
 echo ""
-echo -e "${CYAN}╔════════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${CYAN}║                    DEPLOYMENT SUMMARY                          ║${NC}"
-echo -e "${CYAN}╚════════════════════════════════════════════════════════════════╝${NC}"
-echo ""
-
+echo -e "${CYAN}╔════════════════════════════════════════════════════════════════════╗${NC}"
 if [ "$OVERALL_STATUS" == "success" ]; then
-    log "✅ Deployment completed successfully in ${TOTAL_DURATION}s"
+    echo -e "${CYAN}║${NC}  ${GREEN}✅  DEPLOYMENT COMPLETED SUCCESSFULLY${NC}                              ${CYAN}║${NC}"
 elif [ "$OVERALL_STATUS" == "warning" ]; then
-    warn "⚠️  Deployment completed with warnings in ${TOTAL_DURATION}s"
+    echo -e "${CYAN}║${NC}  ${YELLOW}⚠️   DEPLOYMENT COMPLETED WITH WARNINGS${NC}                             ${CYAN}║${NC}"
 else
-    err "❌ Deployment failed in ${TOTAL_DURATION}s"
+    echo -e "${CYAN}║${NC}  ${RED}❌  DEPLOYMENT FAILED${NC}                                               ${CYAN}║${NC}"
 fi
-
+echo -e "${CYAN}╚════════════════════════════════════════════════════════════════════╝${NC}"
 echo ""
-log "Deployment report: $REPORT_FILE"
+echo -e "  ${BLUE}Elapsed:${NC} ${TOTAL_DURATION}s"
+echo -e "  ${BLUE}Report: ${NC} $REPORT_FILE"
 echo ""
 
-# Print validation summary
-echo -e "${CYAN}Validation Summary:${NC}"
+# ── Phase Summary Table ───────────────────────────────────────────────────────
+echo -e "${CYAN}┌──────────────────────────────┬────────────┬──────────┐${NC}"
+echo -e "${CYAN}│  Phase                       │  Status    │  Time    │${NC}"
+echo -e "${CYAN}├──────────────────────────────┼────────────┼──────────┤${NC}"
 for phase in "${PHASES[@]}"; do
-    status="${PHASE_STATUS[$phase]}"
-    duration="${PHASE_DURATION[$phase]:-0}"
-    
-    if [ "$status" == "success" ]; then
-        echo -e "  ${GREEN}✓${NC} $phase (${duration}s)"
-    elif [ "$status" == "warning" ]; then
-        echo -e "  ${YELLOW}⚠${NC} $phase (${duration}s)"
-    elif [ "$status" == "failed" ]; then
-        echo -e "  ${RED}✗${NC} $phase (${duration}s)"
+    p_status="${PHASE_STATUS[$phase]}"
+    p_dur="${PHASE_DURATION[$phase]:-─}s"
+    # Count errors and warnings for this phase
+    p_err_cnt=0
+    p_warn_cnt=0
+    if [ -n "${PHASE_ERRORS[$phase]:-}" ]; then
+        p_err_cnt=$(echo "${PHASE_ERRORS[$phase]}" | grep -o '"' | wc -l)
+        p_err_cnt=$(( p_err_cnt / 2 ))
+    fi
+    if [ -n "${PHASE_WARNINGS[$phase]:-}" ]; then
+        p_warn_cnt=$(echo "${PHASE_WARNINGS[$phase]}" | grep -o '"' | wc -l)
+        p_warn_cnt=$(( p_warn_cnt / 2 ))
+    fi
+    # Status icon + colour
+    if [ "$p_status" == "success" ]; then
+        STATUS_COL="${GREEN}✓ ok         ${NC}"
+    elif [ "$p_status" == "warning" ]; then
+        STATUS_COL="${YELLOW}⚠ warn ($p_warn_cnt)  ${NC}"
+    elif [ "$p_status" == "failed" ]; then
+        STATUS_COL="${RED}✗ FAILED ($p_err_cnt)${NC}"
     else
-        echo -e "  ${YELLOW}○${NC} $phase (skipped)"
+        STATUS_COL="${YELLOW}○ skipped    ${NC}"
+    fi
+    printf "${CYAN}│${NC}  %-28s ${CYAN}│${NC}  %b${CYAN}│${NC}  %-6s  ${CYAN}│${NC}\n" \
+        "$phase" "$STATUS_COL" "$p_dur"
+done
+echo -e "${CYAN}└──────────────────────────────┴────────────┴──────────┘${NC}"
+echo ""
+
+# ── Per-Check Checklist ───────────────────────────────────────────────────────
+echo -e "${CYAN}Detailed Check Results:${NC}"
+for phase in "${PHASES[@]}"; do
+    p_status="${PHASE_STATUS[$phase]}"
+    if [ "$p_status" == "success" ]; then
+        ph_icon="${GREEN}✓${NC}"
+    elif [ "$p_status" == "warning" ]; then
+        ph_icon="${YELLOW}⚠${NC}"
+    elif [ "$p_status" == "failed" ]; then
+        ph_icon="${RED}✗${NC}"
+    else
+        ph_icon="${YELLOW}○${NC}"
+    fi
+    echo -e "  $ph_icon ${BLUE}[$phase]${NC}"
+    # Parse JSON-like checks string for individual check names/statuses
+    checks_raw="${PHASE_CHECKS[$phase]:-}"
+    if [ -n "$checks_raw" ]; then
+        # Each check is {"name":"...","status":"...","details":"..."}
+        # Extract name+status pairs with simple grep
+        while IFS= read -r check_entry; do
+            c_name=$(echo "$check_entry"  | grep -oP '"name":\s*"\K[^"]+' || echo "?")
+            c_status=$(echo "$check_entry" | grep -oP '"status":\s*"\K[^"]+' || echo "?")
+            c_detail=$(echo "$check_entry" | grep -oP '"details":\s*"\K[^"]+' || echo "")
+            if [ "$c_status" == "success" ]; then
+                c_icon="${GREEN}  ✓${NC}"
+            elif [ "$c_status" == "warning" ]; then
+                c_icon="${YELLOW}  ⚠${NC}"
+            elif [ "$c_status" == "failed" ]; then
+                c_icon="${RED}  ✗${NC}"
+            else
+                c_icon="${YELLOW}  ○${NC}"
+            fi
+            if [ -n "$c_detail" ]; then
+                echo -e "    $c_icon $c_name — $c_detail"
+            else
+                echo -e "    $c_icon $c_name"
+            fi
+        done < <(echo "$checks_raw" | grep -oP '\{[^}]+\}')
+    fi
+    # Print errors for this phase (if any)
+    if [ -n "${PHASE_ERRORS[$phase]:-}" ]; then
+        echo "${PHASE_ERRORS[$phase]}" | grep -oP '"\K[^"]+(?=")' | while read -r emsg; do
+            echo -e "      ${RED}ERROR:${NC} $emsg"
+        done
     fi
 done
-
 echo ""
 
+# ── Next Actions Block ────────────────────────────────────────────────────────
+NEXT_ACTIONS=()
+if [ -f "$DEPLOY_FLAGS" ] && grep -q "REBOOT_REQUIRED=true" "$DEPLOY_FLAGS"; then
+    NEXT_ACTIONS+=("⚡ REBOOT REQUIRED — nvpmodel MAXN mode needs a reboot: sudo reboot")
+fi
+for phase in "${PHASES[@]}"; do
+    if [ "${PHASE_STATUS[$phase]}" == "failed" ]; then
+        NEXT_ACTIONS+=("🔴 Phase '$phase' FAILED — review: $REPORT_FILE")
+    fi
+done
+if [ -f "$PROJECT_ROOT/src/config.json" ]; then
+    if grep -q 'YOUR_CAMERA_IP\|PLACEHOLDER\|CHANGEME' "$PROJECT_ROOT/src/config.json" 2>/dev/null; then
+        NEXT_ACTIONS+=("📝 config.json still has placeholder values — edit src/config.json")
+    fi
+fi
+
+if [ ${#NEXT_ACTIONS[@]} -gt 0 ]; then
+    echo -e "${YELLOW}Next Actions Required:${NC}"
+    for action in "${NEXT_ACTIONS[@]}"; do
+        echo -e "  $action"
+    done
+    echo ""
+fi
+
+# ── Final exit ────────────────────────────────────────────────────────────────
 if [ "$OVERALL_STATUS" != "success" ]; then
-    err "Review the deployment report for details: $REPORT_FILE"
+    err "Deployment had issues. Review the report: $REPORT_FILE"
     exit 1
 fi
 
-log "Services are running. Check status with: sudo systemctl status sieger-inspection sieger-api"
-log "View logs with: journalctl -u sieger-inspection -f"
-
+echo -e "${GREEN}Services running. Operator commands:${NC}"
+echo "  sudo systemctl status sieger-inspection sieger-api"
+echo "  journalctl -u sieger-inspection -f"
+echo "  cat $REPORT_FILE"
+echo ""
 exit 0

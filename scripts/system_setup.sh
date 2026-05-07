@@ -251,30 +251,64 @@ fi
 # ============================================================================
 step "3/7  Basler pylon SDK"
 
+# ⚠ Pylon installer URLs are intentionally hardcoded below.
+# To update them, edit this file directly.
+# URL 1 = pylon arm64 .deb  (pylon_<version>_aarch64.deb)
+# URL 2 = pylon USB/TL supplement .deb  (pylon_<version>_aarch64_setup.deb or similar)
+PYLON_URL_1="https://dhvani365-my.sharepoint.com/:u:/g/personal/vishal_dhvaniai_com/IQCvXlxfFvEUQJhImEiy1_C3AcRQGf8IJ88u1r2959jfhYQ?download=1"
+PYLON_URL_2="https://dhvani365-my.sharepoint.com/:u:/g/personal/vishal_dhvaniai_com/IQCY6dq16artTa7oGtzBp4tvAb-PUom9KoXR0Mw4hQNu2eM?download=1"
+PYLON_DEB_1="/tmp/pylon/pylon_arm64_1.deb"
+PYLON_DEB_2="/tmp/pylon/pylon_arm64_2.deb"
+
 if [ -d /opt/pylon ]; then
-    log "Basler pylon SDK already installed at /opt/pylon"
-    /opt/pylon/bin/pylon-config --version 2>/dev/null || true
+    PYLON_VER=$(/opt/pylon/bin/pylon-config --version 2>/dev/null || echo "installed")
+    log "Basler pylon SDK already installed at /opt/pylon (version: $PYLON_VER) — skipping"
 else
-    # Check if .deb files were provided
-    if ls "$PYLON_DEB_DIR"/pylon_*.deb 1> /dev/null 2>&1; then
-        log "Installing pylon SDK from $PYLON_DEB_DIR"
-        dpkg -i "$PYLON_DEB_DIR"/pylon_*.deb || true
-        apt-get install -f -y
-        log "Pylon SDK installed"
+    log "Basler pylon SDK not found — downloading installer packages..."
+    mkdir -p /tmp/pylon
+
+    _download_pylon_pkg() {
+        local url="$1"
+        local dest="$2"
+        local label="$3"
+        if [ -f "$dest" ]; then
+            log "  $label already downloaded — skipping"
+        else
+            log "  Downloading $label ..."
+            if wget --show-progress -q -O "$dest" "$url"; then
+                SIZE=$(du -h "$dest" | awk '{print $1}')
+                log "  $label downloaded ($SIZE) ✓"
+            else
+                err "  Failed to download $label"
+                err "  URL: $url"
+                err "  Check internet connectivity and re-run this script."
+                return 1
+            fi
+        fi
+    }
+
+    _download_pylon_pkg "$PYLON_URL_1" "$PYLON_DEB_1" "pylon package 1 (main deb)" || true
+    _download_pylon_pkg "$PYLON_URL_2" "$PYLON_DEB_2" "pylon package 2 (supplement deb)" || true
+
+    # Install whichever .deb files were successfully downloaded
+    PYLON_DEBS_FOUND=()
+    [ -f "$PYLON_DEB_1" ] && PYLON_DEBS_FOUND+=("$PYLON_DEB_1")
+    [ -f "$PYLON_DEB_2" ] && PYLON_DEBS_FOUND+=("$PYLON_DEB_2")
+
+    if [ ${#PYLON_DEBS_FOUND[@]} -eq 0 ]; then
+        warn "No pylon .deb files available — Basler cameras will not work."
+        warn "Place .deb files in /tmp/pylon/ and re-run, or install manually:"
+        warn "  sudo dpkg -i /tmp/pylon/pylon_*.deb && sudo apt-get install -f -y"
     else
-        warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        warn "Basler pylon SDK .deb not found at: $PYLON_DEB_DIR"
-        warn ""
-        warn "Download manually from:"
-        warn "  https://www2.baslerweb.com/en/downloads/software-downloads/"
-        warn "  → pylon Camera Software Suite"
-        warn "  → Linux ARM 64-bit (aarch64)"
-        warn "  → .deb package"
-        warn ""
-        warn "Then place the .deb in $PYLON_DEB_DIR and re-run this script,"
-        warn "or install manually:"
-        warn "  sudo dpkg -i pylon_<version>_arm64.deb"
-        warn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        log "Installing pylon SDK packages: ${PYLON_DEBS_FOUND[*]}"
+        dpkg -i "${PYLON_DEBS_FOUND[@]}" 2>/dev/null || true
+        apt-get install -f -y
+        if [ -d /opt/pylon ]; then
+            PYLON_VER=$(/opt/pylon/bin/pylon-config --version 2>/dev/null || echo "installed")
+            log "Pylon SDK installed successfully: $PYLON_VER ✓"
+        else
+            warn "dpkg completed but /opt/pylon not found — check package compatibility."
+        fi
     fi
 fi
 
