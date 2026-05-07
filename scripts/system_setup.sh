@@ -418,6 +418,8 @@ if command -v nvpmodel &> /dev/null; then
         log "Changing Power Mode from $CURRENT_MODE_ID to 0 (MAXN)..."
         # Use 'yes n' to decline immediate reboot if prompted
         yes n | nvpmodel -m 0 2>/dev/null || true
+        # Clear any previous REBOOT_REQUIRED entries, then add fresh one
+        sed -i '/REBOOT_REQUIRED/d' /tmp/pixiq_deploy_flags 2>/dev/null || true
         echo "REBOOT_REQUIRED=true" >> /tmp/pixiq_deploy_flags 2>/dev/null || true
     else
         log "Power mode is already 0 (MAXN)"

@@ -24,7 +24,9 @@
 #     8. Services: installs and starts sieger-inspection + sieger-api
 #     9. Validation: end-to-end health checks on all services
 #
-# This script is IDEMPOTENT — safe to re-run after any failure.
+# This script is IDEMPOTENT — safe to re-run after any failure or reboot.
+# On rerun it detects already-completed work (models, engines, venv) and
+# skips those steps, reporting them as "already present".
 #
 # Prerequisites (set up by bootstrap.sh):
 #     - git, curl, wget installed
@@ -380,7 +382,6 @@ fi
 add_phase "preflight"
 add_phase "tools_installation"
 add_phase "dvc_setup"
-add_phase "authentication"
 add_phase "model_files"
 add_phase "python_environment"
 add_phase "configuration"
@@ -493,22 +494,28 @@ if [ "$VALIDATE_ONLY" == false ]; then
         add_warning "tools_installation" "System setup script not found — manual setup may be required"
     fi
     
-    # Install DVC with Azure support
-    log "Installing DVC with Azure support..."
-    if pip3 install "dvc[azure]" &> /dev/null; then
-        # Refresh command cache so bash finds the new 'dvc' command immediately
-        hash -r
+    # Install DVC with Azure support (skip if already present)
+    if check_command "dvc"; then
         DVC_VERSION=$(dvc --version 2>/dev/null || echo "unknown")
-        log "DVC installed: $DVC_VERSION ✓"
-        add_check "tools_installation" "dvc_install" "success" "$DVC_VERSION"
+        log "DVC already installed: $DVC_VERSION ✓ (skipped install)"
+        add_check "tools_installation" "dvc_install" "success" "$DVC_VERSION (already installed)"
     else
-        err "Failed to install DVC"
-        add_check "tools_installation" "dvc_install" "failed" "pip install failed"
-        add_error "tools_installation" "DVC installation failed"
+        log "Installing DVC with Azure support..."
+        if pip3 install "dvc[azure]" &> /dev/null; then
+            # Refresh command cache so bash finds the new 'dvc' command immediately
+            hash -r
+            DVC_VERSION=$(dvc --version 2>/dev/null || echo "unknown")
+            log "DVC installed: $DVC_VERSION ✓"
+            add_check "tools_installation" "dvc_install" "success" "$DVC_VERSION"
+        else
+            err "Failed to install DVC"
+            add_check "tools_installation" "dvc_install" "failed" "pip install failed"
+            add_error "tools_installation" "DVC installation failed"
+        fi
     fi
     
-    # Check required tools
-    for tool in dvc az uv systemctl; do
+    # Check required tools (az not needed — DVC uses connection string auth)
+    for tool in dvc uv systemctl; do
         if check_command "$tool"; then
             VERSION=$("$tool" --version 2>&1 | head -n1)
             log "$tool: $VERSION ✓"
@@ -520,6 +527,27 @@ if [ "$VALIDATE_ONLY" == false ]; then
         fi
     done
     
+    # Verify Jetson power mode (MAXN = mode 0, hardcoded requirement)
+    if command -v nvpmodel &> /dev/null; then
+        CURRENT_MODE=$(nvpmodel -q 2>/dev/null | grep "NV Power Mode" | grep -o "[0-9]*$" || echo "unknown")
+        CURRENT_MODE_NAME=$(nvpmodel -q 2>/dev/null | grep "NV Power Mode" | sed 's/.*: //' || echo "unknown")
+        if [ "$CURRENT_MODE" = "0" ]; then
+            log "Power mode: MAXN (mode 0) ✓"
+            add_check "tools_installation" "power_mode" "success" "$CURRENT_MODE_NAME (mode $CURRENT_MODE)"
+            # Clear stale reboot flag if power mode is already correct
+            if [ -f "$DEPLOY_FLAGS" ]; then
+                sed -i '/REBOOT_REQUIRED=true/d' "$DEPLOY_FLAGS" 2>/dev/null || true
+            fi
+        else
+            warn "Power mode is $CURRENT_MODE_NAME (mode $CURRENT_MODE) — expected MAXN (mode 0)"
+            warn "system_setup.sh should have set this — a reboot is needed to apply"
+            add_check "tools_installation" "power_mode" "warning" "$CURRENT_MODE_NAME (need reboot for MAXN)"
+            add_warning "tools_installation" "Power mode change requires reboot"
+            # Ensure the flag is set
+            echo "REBOOT_REQUIRED=true" >> "$DEPLOY_FLAGS" 2>/dev/null || true
+        fi
+    fi
+    
     end_phase "tools_installation" "success"
 fi
 
@@ -528,7 +556,7 @@ fi
 # ============================================================================
 
 if [ "$VALIDATE_ONLY" == false ]; then
-    step "Phase 3: DVC Configuration"
+    step "Phase 3: DVC Configuration (Azure Connection String)"
     start_phase "dvc_setup"
     
     # Verify DVC is available
@@ -648,12 +676,28 @@ fi
 # ============================================================================
 
 if [ "$VALIDATE_ONLY" == false ]; then
-    step "Phase 4: Pulling Model Files"
+    step "Phase 4: Model Files (DVC Pull)"
     start_phase "model_files"
     
-    if check_command "dvc"; then
-        log "Running dvc pull..."
-        
+    # Check if all model files are already present (skip dvc pull on rerun)
+    ALL_MODELS_PRESENT=true
+    for model in visible_yolo uv_yolo yarn_tail_v3; do
+        if [ ! -f "weights/${model}.pt" ]; then
+            ALL_MODELS_PRESENT=false
+            break
+        fi
+    done
+    
+    if [ "$ALL_MODELS_PRESENT" = true ]; then
+        log "All model files already present — skipping dvc pull"
+        add_check "model_files" "dvc_pull" "success" "skipped (all files present)"
+        for model in visible_yolo uv_yolo yarn_tail_v3; do
+            SIZE=$(du -h "weights/${model}.pt" | awk '{print $1}')
+            log "weights/${model}.pt: $SIZE ✓ (already present)"
+            add_check "model_files" "$model" "success" "size: $SIZE (already present)"
+        done
+        end_phase "model_files" "success"
+    elif check_command "dvc"; then
         log "Verifying connection string is set before pulling..."
         if [ -z "${AZURE_STORAGE_CONNECTION_STRING:-}" ]; then
             err "AZURE_STORAGE_CONNECTION_STRING not set — cannot authenticate with Azure"
@@ -718,8 +762,6 @@ if [ "$VALIDATE_ONLY" == false ]; then
         add_error "model_files" "DVC is required"
         end_phase "model_files" "failed"
     fi
-    
-    end_phase "model_files" "success"
 fi
 
 # ============================================================================
@@ -787,36 +829,47 @@ if [ "$VALIDATE_ONLY" == false ]; then
         log "Using system Python: $SYSTEM_PYTHON310 (version $PYTHON_VERSION)"
         add_check "python_environment" "python310_check" "success" "$PYTHON_VERSION at $SYSTEM_PYTHON310"
         
-        # Create or update virtual environment
-        if [ -d ".venv" ]; then
-            log "Virtual environment exists — removing to ensure Python 3.10 compatibility..."
-            rm -rf .venv
-            add_check "python_environment" "venv_cleanup" "success" "removed existing venv"
+        # Create or reuse virtual environment
+        SKIP_VENV_CREATE=false
+        if [ -d ".venv" ] && [ -x ".venv/bin/python" ]; then
+            EXISTING_VENV_PY=$(.venv/bin/python --version 2>&1 | awk '{print $2}')
+            if [[ "$EXISTING_VENV_PY" =~ ^3\.10\. ]]; then
+                log "Virtual environment exists with Python $EXISTING_VENV_PY ✓ (reusing)"
+                add_check "python_environment" "venv_created" "success" "reused existing (python $EXISTING_VENV_PY)"
+                add_check "python_environment" "venv_python_version" "success" "$EXISTING_VENV_PY"
+                SKIP_VENV_CREATE=true
+            else
+                log "Virtual environment exists but uses Python $EXISTING_VENV_PY — recreating for 3.10..."
+                rm -rf .venv
+                add_check "python_environment" "venv_cleanup" "success" "removed venv (was python $EXISTING_VENV_PY)"
+            fi
         fi
         
-        log "Creating virtual environment with Python 3.10 and system-site-packages..."
-        if uv venv --python "$SYSTEM_PYTHON310" --system-site-packages; then
-            log "Virtual environment created ✓"
-            add_check "python_environment" "venv_created" "success" "python $PYTHON_VERSION with system-site-packages"
-            
-            # Verify the venv is using the correct Python version
-            VENV_PYTHON_VERSION=$(.venv/bin/python --version 2>&1 | awk '{print $2}')
-            if [[ "$VENV_PYTHON_VERSION" =~ ^3\.10\. ]]; then
-                log "Virtual environment Python version verified: $VENV_PYTHON_VERSION ✓"
-                add_check "python_environment" "venv_python_version" "success" "$VENV_PYTHON_VERSION"
+        if [ "$SKIP_VENV_CREATE" = false ]; then
+            log "Creating virtual environment with Python 3.10 and system-site-packages..."
+            if uv venv --python "$SYSTEM_PYTHON310" --system-site-packages; then
+                log "Virtual environment created ✓"
+                add_check "python_environment" "venv_created" "success" "python $PYTHON_VERSION with system-site-packages"
+                
+                # Verify the venv is using the correct Python version
+                VENV_PYTHON_VERSION=$(.venv/bin/python --version 2>&1 | awk '{print $2}')
+                if [[ "$VENV_PYTHON_VERSION" =~ ^3\.10\. ]]; then
+                    log "Virtual environment Python version verified: $VENV_PYTHON_VERSION ✓"
+                    add_check "python_environment" "venv_python_version" "success" "$VENV_PYTHON_VERSION"
+                else
+                    err "Virtual environment is using Python $VENV_PYTHON_VERSION instead of 3.10.x"
+                    err "This will cause CUDA/TensorRT compatibility issues"
+                    add_check "python_environment" "venv_python_version" "failed" "$VENV_PYTHON_VERSION (expected 3.10.x)"
+                    add_error "python_environment" "Virtual environment using wrong Python version"
+                    end_phase "python_environment" "failed"
+                    return 1
+                fi
             else
-                err "Virtual environment is using Python $VENV_PYTHON_VERSION instead of 3.10.x"
-                err "This will cause CUDA/TensorRT compatibility issues"
-                add_check "python_environment" "venv_python_version" "failed" "$VENV_PYTHON_VERSION (expected 3.10.x)"
-                add_error "python_environment" "Virtual environment using wrong Python version"
+                err "Failed to create virtual environment"
+                add_check "python_environment" "venv_created" "failed" "uv venv failed"
+                add_error "python_environment" "Virtual environment creation failed"
                 end_phase "python_environment" "failed"
-                return 1
             fi
-        else
-            err "Failed to create virtual environment"
-            add_check "python_environment" "venv_created" "failed" "uv venv failed"
-            add_error "python_environment" "Virtual environment creation failed"
-            end_phase "python_environment" "failed"
         fi
         
         log "Syncing dependencies with uv..."
@@ -902,7 +955,24 @@ if [ "$VALIDATE_ONLY" == false ]; then
     
     EXPORT_SCRIPT="$PROJECT_ROOT/scripts/export_tensorrt.py"
     
-    if [ -f "$EXPORT_SCRIPT" ] && check_command "uv"; then
+    # Check if all TensorRT engines are already present (skip export on rerun)
+    ALL_ENGINES_PRESENT=true
+    for model in visible_yolo uv_yolo yarn_tail_v3; do
+        if [ ! -f "weights/${model}.engine" ]; then
+            ALL_ENGINES_PRESENT=false
+            break
+        fi
+    done
+    
+    if [ "$ALL_ENGINES_PRESENT" = true ]; then
+        log "All TensorRT engines already present — skipping export"
+        add_check "tensorrt_export" "export" "success" "skipped (all engines present)"
+        for model in visible_yolo uv_yolo yarn_tail_v3; do
+            SIZE=$(du -h "weights/${model}.engine" | awk '{print $1}')
+            log "weights/${model}.engine: $SIZE ✓ (already exported)"
+            add_check "tensorrt_export" "$model" "success" "size: $SIZE (already exported)"
+        done
+    elif [ -f "$EXPORT_SCRIPT" ] && check_command "uv"; then
         log "Exporting TensorRT engines (this may take several minutes)..."
         
         if uv run python "$EXPORT_SCRIPT"; then
