@@ -30,6 +30,16 @@ import sys
 import time
 from pathlib import Path
 
+# Jetson PyTorch (nv24.05) doesn't support the `dynamo` kwarg added in
+# torch.onnx.export for stock PyTorch 2.1+. Strip it transparently.
+import torch as _torch
+_real_onnx_export = _torch.onnx.export
+def _patched_onnx_export(*args, **kwargs):
+    kwargs.pop("dynamo", None)
+    return _real_onnx_export(*args, **kwargs)
+_torch.onnx.export = _patched_onnx_export
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
